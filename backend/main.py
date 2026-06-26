@@ -51,9 +51,10 @@ import signal
 
 
 from backend.parser import parse_caapid_pdf
-import db
+from backend import db
 
 app = FastAPI(title="Evaluation Studio API")
+
 
 app.add_middleware(
     CORSMiddleware,

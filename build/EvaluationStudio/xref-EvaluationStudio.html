@@ -5377,9 +5377,37 @@ imported by:
   <a name="backend"></a>
   <a target="code" href="-" type="text/plain"><tt>backend</tt></a>
 <span class="moduletype">NamespacePackage</span>  <div class="import">
+imports:
+    <a href="#backend.db">backend.db</a>
+
+  </div>
+  <div class="import">
 imported by:
-    <a href="#backend.main">backend.main</a>
+    <a href="#backend.db">backend.db</a>
+ &#8226;   <a href="#backend.main">backend.main</a>
  &#8226;   <a href="#backend.parser">backend.parser</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="backend.db"></a>
+  <a target="code" href="///C:/Users/yonas/Desktop/evaluation-studio-v2/backend/db.py" type="text/plain"><tt>backend.db</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#backend">backend</a>
+ &#8226;   <a href="#contextlib">contextlib</a>
+ &#8226;   <a href="#json">json</a>
+ &#8226;   <a href="#os">os</a>
+ &#8226;   <a href="#sqlite3">sqlite3</a>
+ &#8226;   <a href="#uuid">uuid</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#backend">backend</a>
+ &#8226;   <a href="#backend.main">backend.main</a>
 
   </div>
 
@@ -5391,8 +5419,8 @@ imported by:
 <span class="moduletype">SourceModule</span>  <div class="import">
 imports:
     <a href="#backend">backend</a>
+ &#8226;   <a href="#backend.db">backend.db</a>
  &#8226;   <a href="#backend.parser">backend.parser</a>
- &#8226;   <a href="#db">db</a>
  &#8226;   <a href="#fastapi">fastapi</a>
  &#8226;   <a href="#fastapi.middleware.cors">fastapi.middleware.cors</a>
  &#8226;   <a href="#fastapi.responses">fastapi.responses</a>
@@ -5401,6 +5429,7 @@ imports:
  &#8226;   <a href="#pydantic">pydantic</a>
  &#8226;   <a href="#pydantic.BaseModel">pydantic.BaseModel</a>
  &#8226;   <a href="#shutil">shutil</a>
+ &#8226;   <a href="#signal">signal</a>
  &#8226;   <a href="#sys">sys</a>
  &#8226;   <a href="#uuid">uuid</a>
 
@@ -6965,6 +6994,7 @@ imported by:
  &#8226;   <a href="#anyio.abc._sockets">anyio.abc._sockets</a>
  &#8226;   <a href="#anyio.from_thread">anyio.from_thread</a>
  &#8226;   <a href="#asyncio.staggered">asyncio.staggered</a>
+ &#8226;   <a href="#backend.db">backend.db</a>
  &#8226;   <a href="#click._termui_impl">click._termui_impl</a>
  &#8226;   <a href="#click._textwrap">click._textwrap</a>
  &#8226;   <a href="#click.core">click.core</a>
@@ -6972,7 +7002,6 @@ imported by:
  &#8226;   <a href="#click.termui">click.termui</a>
  &#8226;   <a href="#colorama.initialise">colorama.initialise</a>
  &#8226;   <a href="#configparser">configparser</a>
- &#8226;   <a href="#db">db</a>
  &#8226;   <a href="#fastapi.concurrency">fastapi.concurrency</a>
  &#8226;   <a href="#fastapi.dependencies.utils">fastapi.dependencies.utils</a>
  &#8226;   <a href="#fastapi.middleware.asyncexitstack">fastapi.middleware.asyncexitstack</a>
@@ -7394,26 +7423,6 @@ imported by:
  &#8226;   <a href="#tomllib._re">tomllib._re</a>
  &#8226;   <a href="#xmlrpc.client">xmlrpc.client</a>
  &#8226;   <a href="#zoneinfo._zoneinfo">zoneinfo._zoneinfo</a>
-
-  </div>
-
-</div>
-
-<div class="node">
-  <a name="db"></a>
-  <a target="code" href="///C:/Users/yonas/Desktop/evaluation-studio-v2/backend/db.py" type="text/plain"><tt>db</tt></a>
-<span class="moduletype">SourceModule</span>  <div class="import">
-imports:
-    <a href="#contextlib">contextlib</a>
- &#8226;   <a href="#json">json</a>
- &#8226;   <a href="#os">os</a>
- &#8226;   <a href="#sqlite3">sqlite3</a>
- &#8226;   <a href="#uuid">uuid</a>
-
-  </div>
-  <div class="import">
-imported by:
-    <a href="#backend.main">backend.main</a>
 
   </div>
 
@@ -13931,8 +13940,8 @@ imports:
   </div>
   <div class="import">
 imported by:
-    <a href="#backend.parser">backend.parser</a>
- &#8226;   <a href="#db">db</a>
+    <a href="#backend.db">backend.db</a>
+ &#8226;   <a href="#backend.parser">backend.parser</a>
  &#8226;   <a href="#fastapi.openapi.docs">fastapi.openapi.docs</a>
  &#8226;   <a href="#fastapi.routing">fastapi.routing</a>
  &#8226;   <a href="#importlib.metadata">importlib.metadata</a>
@@ -15490,6 +15499,7 @@ imported by:
  &#8226;   <a href="#asyncio.selector_events">asyncio.selector_events</a>
  &#8226;   <a href="#asyncio.unix_events">asyncio.unix_events</a>
  &#8226;   <a href="#asyncio.windows_utils">asyncio.windows_utils</a>
+ &#8226;   <a href="#backend.db">backend.db</a>
  &#8226;   <a href="#backend.main">backend.main</a>
  &#8226;   <a href="#bz2">bz2</a>
  &#8226;   <a href="#click._compat">click._compat</a>
@@ -15505,7 +15515,6 @@ imported by:
  &#8226;   <a href="#configparser">configparser</a>
  &#8226;   <a href="#contextlib">contextlib</a>
  &#8226;   <a href="#ctypes">ctypes</a>
- &#8226;   <a href="#db">db</a>
  &#8226;   <a href="#email.utils">email.utils</a>
  &#8226;   <a href="#fastapi.applications">fastapi.applications</a>
  &#8226;   <a href="#fastapi.routing">fastapi.routing</a>
@@ -25197,6 +25206,7 @@ imported by:
  &#8226;   <a href="#asyncio.proactor_events">asyncio.proactor_events</a>
  &#8226;   <a href="#asyncio.runners">asyncio.runners</a>
  &#8226;   <a href="#asyncio.unix_events">asyncio.unix_events</a>
+ &#8226;   <a href="#backend.main">backend.main</a>
  &#8226;   <a href="#multiprocessing.forkserver">multiprocessing.forkserver</a>
  &#8226;   <a href="#multiprocessing.managers">multiprocessing.managers</a>
  &#8226;   <a href="#multiprocessing.popen_fork">multiprocessing.popen_fork</a>
@@ -25400,7 +25410,7 @@ imports:
   </div>
   <div class="import">
 imported by:
-    <a href="#db">db</a>
+    <a href="#backend.db">backend.db</a>
  &#8226;   <a href="#sqlite3">sqlite3</a>
  &#8226;   <a href="#sqlite3.__main__">sqlite3.__main__</a>
  &#8226;   <a href="#sqlite3.dbapi2">sqlite3.dbapi2</a>
@@ -28590,9 +28600,9 @@ imports:
   </div>
   <div class="import">
 imported by:
-    <a href="#backend.main">backend.main</a>
+    <a href="#backend.db">backend.db</a>
+ &#8226;   <a href="#backend.main">backend.main</a>
  &#8226;   <a href="#click.types">click.types</a>
- &#8226;   <a href="#db">db</a>
  &#8226;   <a href="#fastapi.encoders">fastapi.encoders</a>
  &#8226;   <a href="#pydantic._internal._generate_schema">pydantic._internal._generate_schema</a>
  &#8226;   <a href="#pydantic.deprecated.json">pydantic.deprecated.json</a>
