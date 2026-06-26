@@ -1,0 +1,12 @@
+<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="es-icon-title es-icon-desc">
+  <title id="es-icon-title">Evaluation Studio icon</title>
+  <desc id="es-icon-desc">A navy rounded square containing a geometric letter E, with the three horizontal arms colored as an ascending bar chart in blue and teal, and the top arm terminating in a checkmark.</desc>
+
+  <rect x="0" y="0" width="200" height="200" rx="28" fill="#0F172A"/>
+
+  <rect x="46" y="46" width="26" height="108" rx="6" fill="#E2E8F0"/>
+  <rect x="46" y="128" width="98" height="26" rx="6" fill="#2563EB"/>
+  <rect x="46" y="87" width="74" height="26" rx="6" fill="#2563EB"/>
+  <rect x="46" y="46" width="98" height="26" rx="6" fill="#14B8A6"/>
+  <path d="M128 59 L141 72 L160 41" fill="none" stroke="#14B8A6" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

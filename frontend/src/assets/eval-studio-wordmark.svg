@@ -1,0 +1,15 @@
+<svg width="640" height="120" viewBox="0 0 640 120" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="es-lockup1-title es-lockup1-desc">
+  <title id="es-lockup1-title">Evaluation Studio logo, single line</title>
+  <desc id="es-lockup1-desc">Horizontal logo lockup with the navy E icon on the left and the wordmark "Evaluation Studio" on a single baseline to the right.</desc>
+
+  <g>
+    <rect x="0" y="0" width="120" height="120" rx="18" fill="#0F172A"/>
+    <rect x="27.6" y="27.6" width="15.6" height="64.8" rx="3.6" fill="#E2E8F0"/>
+    <rect x="27.6" y="76.8" width="58.8" height="15.6" rx="3.6" fill="#2563EB"/>
+    <rect x="27.6" y="52.2" width="44.4" height="15.6" rx="3.6" fill="#2563EB"/>
+    <rect x="27.6" y="27.6" width="58.8" height="15.6" rx="3.6" fill="#14B8A6"/>
+    <path d="M76.8 35.4 L85.2 43.2 L96 24.6" fill="none" stroke="#14B8A6" stroke-width="6.6" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <text x="148" y="76" font-family="Helvetica, Arial, sans-serif" font-size="46" font-weight="700" letter-spacing="0.3" fill="#0F172A">Evaluation <tspan fill="#14B8A6">Studio</tspan></text>
+</svg>
