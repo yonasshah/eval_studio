@@ -28,6 +28,10 @@ dist-ssr
 __pycache__/
 *.pyc
 /backend/venv/
-/backend/_uploaded_pdfs/
+# Ignore everything inside this folder
+backend/_uploaded_pdfs/*
+# EXCEPT the hidden .gitkeep file itself
+!backend/_uploaded_pdfs/.gitkeep
+
 /backend/evaluation_studio.db
 
