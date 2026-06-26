@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react'; // Added useEffect import
 import { AppShell, Title, Text, Group, UnstyledButton, NavLink, Stack } from '@mantine/core';
 import { IconListCheck, IconArchive, IconLayoutDashboard } from '@tabler/icons-react';
 import { CycleProvider } from './CycleContext';
@@ -12,6 +12,21 @@ type PageKey = 'triage' | 'archive' | 'dashboard';
 
 function AppShellContent() {
   const [page, setPage] = useState<PageKey>('triage');
+
+  // BACKGROUND SHUTDOWN LISTENER
+  useEffect(() => {
+    const handleUnload = () => {
+      // COMMENT THIS OUT DURING NORMAL DEV WORK
+      // UNCOMMENT THIS FOR FINAL PRODUCTION PYINSTALLER BUILD
+      navigator.sendBeacon("/api/shutdown");
+    };
+
+    window.addEventListener("beforeunload", handleUnload);
+
+    return () => {
+      window.removeEventListener("beforeunload", handleUnload);
+    };
+  }, []);
 
   function goHome() {
     setPage('triage');

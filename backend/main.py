@@ -44,8 +44,13 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+import os
+import sys
+from fastapi.staticfiles import StaticFiles
+import signal
 
-from parser import parse_caapid_pdf
+
+from backend.parser import parse_caapid_pdf
 import db
 
 app = FastAPI(title="Evaluation Studio API")
@@ -177,3 +182,31 @@ async def set_review_status(file_id: str, body: StatusUpdate):
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+
+# Determine the base directory (handles PyInstaller sandbox extraction)
+if getattr(sys, 'frozen', False):
+    base_dir = sys._MEIPASS
+else:
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+# In the PyInstaller bundle, the frontend 'dist' contents will sit here
+frontend_path = os.path.join(base_dir, "frontend")
+
+if os.path.exists(frontend_path):
+    # Mount static assets (js, css)
+    app.mount("/assets", StaticFiles(directory=os.path.join(frontend_path, "assets")), name="assets")
+
+    # Catch-all route to serve index.html for React Router
+    @app.get("/{catchall:path}")
+    async def serve_frontend(catchall: str):
+        # Explicitly allow backend API routes to bypass this handler
+        if catchall.startswith("api"):
+            return {"error": "Not Found"}
+        return FileResponse(os.path.join(frontend_path, "index.html"))
+    
+@app.post("/api/shutdown")
+def shutdown():
+    # Sends a termination signal to the running script itself
+    os.kill(os.getpid(), signal.SIGTERM)
+    return {"status": "Shutting down background service..."}
