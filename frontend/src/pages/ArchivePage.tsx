@@ -20,6 +20,8 @@ import type { ApplicantReport, ReviewStatus } from '../types';
 import { toChecklistItems, STATUS_META, getReviewStatus } from '../types';
 import { useCycles, API_BASE } from '../CycleContext';
 import ApplicantDetail from '../ApplicantDetail';
+import StatusCommentModal, { type CommentModalRequest } from '../StatusCommentModal';
+import { statusRequiresCommentStep } from '../statusChange';
 
 function formatApplicantLabel(report: ApplicantReport): string {
   const name = report.applicant_name?.trim();
@@ -37,6 +39,7 @@ export default function ArchivePage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [openDetail, setOpenDetail] = useState<ApplicantReport | null>(null);
+  const [commentModal, setCommentModal] = useState<CommentModalRequest | null>(null);
 
   useEffect(() => {
     if (!selectedCycleId) {
@@ -61,16 +64,31 @@ export default function ArchivePage() {
       .finally(() => setLoading(false));
   }, [selectedCycleId]);
 
-  async function handleStatusChange(fileId: string | undefined, status: ReviewStatus) {
+  async function handleStatusChange(fileId: string | undefined, status: ReviewStatus, comment?: string) {
     if (!fileId) return;
     try {
       const res = await fetch(`${API_BASE}/api/applicants/${fileId}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify({ status, comment: comment ?? null }),
       });
-      if (!res.ok) throw new Error(`Server returned ${res.status}`);
-      setReports((prev) => prev.map((r) => (r.file_id === fileId ? { ...r, review_status: status } : r)));
+      if (!res.ok) {
+        const detail = await res.json().catch(() => null);
+        throw new Error(detail?.detail || `Server returned ${res.status}`);
+      }
+      const updated = await res.json();
+      setReports((prev) =>
+        prev.map((r) =>
+          r.file_id === fileId
+            ? { ...r, review_status: status, review_comment: updated.review_comment ?? r.review_comment }
+            : r
+        )
+      );
+      setOpenDetail((prev) =>
+        prev && prev.file_id === fileId
+          ? { ...prev, review_status: status, review_comment: updated.review_comment ?? prev.review_comment }
+          : prev
+      );
       notifications.show({
         message: `Status updated to ${STATUS_META[status].label}.`,
         color: STATUS_META[status].color,
@@ -88,6 +106,22 @@ export default function ArchivePage() {
     }
   }
 
+  // Opens the comment modal for statuses that require or auto-generate one
+  // (Invited / Not Invited); everything else applies immediately.
+  function requestStatusChange(report: ApplicantReport, status: ReviewStatus) {
+    if (!report.file_id) return;
+    if (statusRequiresCommentStep(status)) {
+      setCommentModal({
+        status,
+        applicantLabel: formatApplicantLabel(report),
+        existingComment: report.review_comment,
+        apply: (comment) => handleStatusChange(report.file_id, status, comment),
+      });
+    } else {
+      handleStatusChange(report.file_id, status);
+    }
+  }
+
   function matchesSearch(report: ApplicantReport, query: string): boolean {
     if (!query.trim()) return true;
     const q = query.trim().toLowerCase();
@@ -101,6 +135,7 @@ export default function ArchivePage() {
   const searched = reports.filter((r) => !r.error && matchesSearch(r, searchQuery));
   const invited = searched.filter((r) => getReviewStatus(r) === 'invited');
   const notInvited = searched.filter((r) => getReviewStatus(r) === 'not_invited');
+  const waitlisted = searched.filter((r) => getReviewStatus(r) === 'waitlisted');
 
   if (openDetail) {
     return (
@@ -109,15 +144,13 @@ export default function ArchivePage() {
           report={openDetail}
           apiBase={API_BASE}
           onBack={() => setOpenDetail(null)}
-          onStatusChange={(status) => {
-            handleStatusChange(openDetail.file_id, status);
-            setOpenDetail((prev) => (prev ? { ...prev, review_status: status } : prev));
-          }}
+          onStatusChange={(status) => requestStatusChange(openDetail, status)}
           onNext={() => {}}
           onPrev={() => {}}
           hasNext={false}
           hasPrev={false}
         />
+        <StatusCommentModal request={commentModal} onClose={() => setCommentModal(null)} />
       </Stack>
     );
   }
@@ -167,7 +200,7 @@ export default function ArchivePage() {
                   expanded={expandedId === r.file_id}
                   onToggle={() => setExpandedId((prev) => (prev === r.file_id ? null : r.file_id ?? null))}
                   onOpenDetail={() => setOpenDetail(r)}
-                  onStatusChange={(status) => handleStatusChange(r.file_id, status)}
+                  onStatusChange={(status) => requestStatusChange(r, status)}
                 />
               ))}
               {invited.length === 0 && (
@@ -192,7 +225,7 @@ export default function ArchivePage() {
                   expanded={expandedId === r.file_id}
                   onToggle={() => setExpandedId((prev) => (prev === r.file_id ? null : r.file_id ?? null))}
                   onOpenDetail={() => setOpenDetail(r)}
-                  onStatusChange={(status) => handleStatusChange(r.file_id, status)}
+                  onStatusChange={(status) => requestStatusChange(r, status)}
                 />
               ))}
               {notInvited.length === 0 && (
@@ -202,8 +235,35 @@ export default function ArchivePage() {
               )}
             </Stack>
           </div>
+
+          <Divider />
+
+          <div>
+            <Text fw={600} mb="xs">
+              Waitlisted for Interview ({waitlisted.length})
+            </Text>
+            <Stack gap="xs">
+              {waitlisted.map((r) => (
+                <ArchiveRow
+                  key={r.file_id}
+                  report={r}
+                  expanded={expandedId === r.file_id}
+                  onToggle={() => setExpandedId((prev) => (prev === r.file_id ? null : r.file_id ?? null))}
+                  onOpenDetail={() => setOpenDetail(r)}
+                  onStatusChange={(status) => requestStatusChange(r, status)}
+                />
+              ))}
+              {waitlisted.length === 0 && (
+                <Text size="sm" c="dimmed" pl="xl">
+                  None.
+                </Text>
+              )}
+            </Stack>
+          </div>
         </Stack>
       )}
+
+      <StatusCommentModal request={commentModal} onClose={() => setCommentModal(null)} />
     </Stack>
   );
 }
@@ -252,6 +312,11 @@ function ArchiveRow({
 
       {expanded && (
         <Stack gap="sm" mt="sm" pt="sm" style={{ borderTop: '1px solid var(--mantine-color-gray-3)' }}>
+          {report.review_comment && report.review_comment.trim() && (
+            <Text size="xs" c="dimmed">
+              Note: {report.review_comment}
+            </Text>
+          )}
           <Group justify="space-between">
             <Text size="sm" fw={500} c="dimmed">
               Required items
@@ -314,4 +379,3 @@ function ArchiveRow({
     </Card>
   );
 }
-

@@ -2,7 +2,13 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import { notifications } from '@mantine/notifications';
 import type { Cycle } from './types';
 
-const API_BASE = 'http://localhost:8000';
+// In development, Vite serves the frontend on :5173 and FastAPI runs
+// separately on :8000, so requests need an explicit absolute URL. In a
+// production build (used when FastAPI serves these static files itself,
+// e.g. inside the packaged desktop app), frontend and backend share the
+// same origin, so a relative/empty base correctly points requests back
+// at whatever host:port the page itself was loaded from.
+const API_BASE = import.meta.env.DEV ? 'http://localhost:8000' : '';
 const SELECTED_CYCLE_KEY = 'evalStudio.selectedCycleId';
 
 interface CycleContextValue {

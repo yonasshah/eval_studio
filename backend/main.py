@@ -28,9 +28,15 @@ Evaluation Studio backend.
 
   PATCH  /api/applicants/{file_id}/status -- updates an applicant's review
                                   status (not_reviewed / invited /
-                                  not_invited). This is set manually by the
-                                  user once they've made a decision; it is
-                                  never set automatically by parsing.
+                                  not_invited / waitlisted) and, where
+                                  relevant, their review_comment. A comment
+                                  is REQUIRED when status is not_invited
+                                  (400 if missing); when status is invited,
+                                  a "MIR" note is recorded automatically
+                                  with any supplied comment appended after
+                                  it. This is set manually by the user once
+                                  they've made a decision; it is never set
+                                  automatically by parsing.
 
 PDFs are saved to a folder on disk; metadata + parsed report JSON are saved
 to a local SQLite file (db.py). Both persist across server restarts.
@@ -121,9 +127,18 @@ async def parse_batch(files: list[UploadFile] = File(...), cycle_id: str = Form(
             results.append(payload)
         except Exception as e:
             # Clean up the saved PDF if parsing failed, so we don't keep an
-            # orphaned file with no usable report attached to it.
+            # orphaned file with no usable report attached to it. This is
+            # wrapped in its own try/except: parse_caapid_pdf now always
+            # closes its fitz.Document (even on failure), but on Windows a
+            # deletion can still occasionally fail for other transient
+            # reasons (e.g. antivirus scanning the file). A failed cleanup
+            # here shouldn't crash the whole batch request -- we still
+            # want to report the parse error back to the user.
             if os.path.exists(dest_path):
-                os.remove(dest_path)
+                try:
+                    os.remove(dest_path)
+                except OSError:
+                    pass
             results.append(
                 {
                     "filename": upload.filename,
@@ -166,18 +181,19 @@ async def delete_applicant(file_id: str):
 
 
 class StatusUpdate(BaseModel):
-    status: str  # 'not_reviewed' | 'invited' | 'not_invited'
+    status: str  # 'not_reviewed' | 'invited' | 'not_invited' | 'waitlisted'
+    comment: str | None = None  # required when status == 'not_invited'
 
 
 @app.patch("/api/applicants/{file_id}/status")
 async def set_review_status(file_id: str, body: StatusUpdate):
     try:
-        updated = db.update_review_status(file_id, body.status)
+        updated, final_comment = db.update_review_status(file_id, body.status, body.comment)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not updated:
         raise HTTPException(status_code=404, detail="Applicant not found.")
-    return {"file_id": file_id, "review_status": body.status}
+    return {"file_id": file_id, "review_status": body.status, "review_comment": final_comment}
 
 
 @app.get("/api/health")

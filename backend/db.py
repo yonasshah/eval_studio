@@ -10,7 +10,9 @@ Two tables:
   - applicants: one row per uploaded applicant PDF -- its generated
     file_id, original filename, path to the saved PDF on disk, the full
     parsed report as JSON, a review_status (not_reviewed / invited /
-    not_invited), and a cycle_id linking it to its cycle.
+    not_invited / waitlisted), a review_comment (justification for
+    not_invited, "MIR" + optional notes for invited), and a cycle_id
+    linking it to its cycle.
 
 This lets uploads AND review decisions survive a backend restart -- on
 startup, the app can list everything previously uploaded instead of
@@ -29,7 +31,14 @@ from contextlib import contextmanager
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "evaluation_studio.db")
 
-VALID_STATUSES = {"not_reviewed", "invited", "not_invited"}
+VALID_STATUSES = {"not_reviewed", "invited", "not_invited", "waitlisted"}
+# Statuses that require a review_comment to be recorded alongside the
+# status change:
+#   - not_invited: comment is REQUIRED (a justification for the decision).
+#   - invited: comment is auto-set to "MIR" (Meets Interview Requirements)
+#     if none is supplied, with any additional text appended after it.
+STATUSES_REQUIRING_COMMENT = {"not_invited"}
+INVITED_DEFAULT_NOTE = "MIR"
 DEFAULT_STATUS = "not_reviewed"
 UNASSIGNED_CYCLE_NAME = "Unassigned"
 
@@ -53,6 +62,7 @@ def init_db():
                 pdf_path TEXT NOT NULL,
                 report_json TEXT NOT NULL,
                 review_status TEXT NOT NULL DEFAULT 'not_reviewed',
+                review_comment TEXT,
                 cycle_id TEXT,
                 uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (cycle_id) REFERENCES cycles(cycle_id)
@@ -70,6 +80,8 @@ def init_db():
             )
         if "cycle_id" not in existing_cols:
             conn.execute("ALTER TABLE applicants ADD COLUMN cycle_id TEXT")
+        if "review_comment" not in existing_cols:
+            conn.execute("ALTER TABLE applicants ADD COLUMN review_comment TEXT")
 
         conn.commit()
 
@@ -163,25 +175,40 @@ def delete_cycle(cycle_id: str) -> bool:
 def save_applicant(
     file_id: str, filename: str, pdf_path: str, report_dict: dict, cycle_id: str
 ) -> dict:
-    """Saves the applicant and returns the report dict with review_status
-    and cycle_id included, so callers (e.g. the upload endpoint) can
-    return a response that already has these fields set."""
+    """Saves the applicant and returns the report dict with review_status,
+    review_comment, and cycle_id included, so callers (e.g. the upload
+    endpoint) can return a response that already has these fields set."""
     existing_status = DEFAULT_STATUS
+    existing_comment = None
     with _connect() as conn:
         row = conn.execute(
-            "SELECT review_status FROM applicants WHERE file_id = ?", (file_id,)
+            "SELECT review_status, review_comment FROM applicants WHERE file_id = ?", (file_id,)
         ).fetchone()
         if row:
             existing_status = row[0]
+            existing_comment = row[1]
 
-        report_dict = {**report_dict, "review_status": existing_status, "cycle_id": cycle_id}
+        report_dict = {
+            **report_dict,
+            "review_status": existing_status,
+            "review_comment": existing_comment,
+            "cycle_id": cycle_id,
+        }
         conn.execute(
             """
             INSERT OR REPLACE INTO applicants
-                (file_id, filename, pdf_path, report_json, review_status, cycle_id)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (file_id, filename, pdf_path, report_json, review_status, review_comment, cycle_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (file_id, filename, pdf_path, json.dumps(report_dict, default=str), existing_status, cycle_id),
+            (
+                file_id,
+                filename,
+                pdf_path,
+                json.dumps(report_dict, default=str),
+                existing_status,
+                existing_comment,
+                cycle_id,
+            ),
         )
         conn.commit()
         return report_dict
@@ -197,45 +224,83 @@ def get_pdf_path(file_id: str) -> str | None:
 
 def list_all_applicants(cycle_id: str | None = None) -> list[dict]:
     """Returns previously-uploaded applicants, most recent first, with
-    each report's review_status and cycle_id kept in sync with their
-    dedicated columns. If cycle_id is given, only that cycle's applicants
-    are returned; otherwise all applicants across all cycles."""
+    each report's review_status, review_comment, and cycle_id kept in sync
+    with their dedicated columns. If cycle_id is given, only that cycle's
+    applicants are returned; otherwise all applicants across all cycles."""
     with _connect() as conn:
         if cycle_id:
             rows = conn.execute(
-                "SELECT report_json, review_status, cycle_id FROM applicants WHERE cycle_id = ? ORDER BY uploaded_at DESC",
+                "SELECT report_json, review_status, review_comment, cycle_id FROM applicants WHERE cycle_id = ? ORDER BY uploaded_at DESC",
                 (cycle_id,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT report_json, review_status, cycle_id FROM applicants ORDER BY uploaded_at DESC"
+                "SELECT report_json, review_status, review_comment, cycle_id FROM applicants ORDER BY uploaded_at DESC"
             ).fetchall()
         results = []
-        for report_json, status, applicant_cycle_id in rows:
+        for report_json, status, comment, applicant_cycle_id in rows:
             report = json.loads(report_json)
             report["review_status"] = status
+            report["review_comment"] = comment
             report["cycle_id"] = applicant_cycle_id
             results.append(report)
         return results
 
 
-def update_review_status(file_id: str, status: str) -> bool:
+def update_review_status(file_id: str, status: str, comment: str | None = None) -> tuple[bool, str | None]:
+    """Updates an applicant's review status and, where relevant, their
+    review_comment. Returns (updated, final_comment) -- final_comment is
+    the actual comment now stored (e.g. "MIR; <extra>" for invited), so
+    callers can echo the canonical value back to the frontend rather than
+    re-deriving it.
+
+      - not_invited: `comment` is REQUIRED (a non-empty justification).
+        Raises ValueError if missing so the caller can 400 back to the
+        user instead of silently recording an unexplained rejection.
+      - invited: the note "MIR" is always recorded. If `comment` is
+        provided (extra notes the reviewer typed), it's appended after
+        the MIR note as "MIR; <comment>"; otherwise the comment is just
+        "MIR".
+      - waitlisted / not_reviewed: `comment`, if provided, is stored as-is
+        (lets these also carry an optional note); if omitted (None), any
+        existing comment is left untouched.
+    """
     if status not in VALID_STATUSES:
         raise ValueError(f"Invalid status {status!r}. Must be one of {VALID_STATUSES}.")
+
+    if status in STATUSES_REQUIRING_COMMENT and not (comment and comment.strip()):
+        raise ValueError(
+            "A comment is required to justify marking an applicant Not Invited to Interview."
+        )
+
     with _connect() as conn:
         row = conn.execute(
             "SELECT report_json FROM applicants WHERE file_id = ?", (file_id,)
         ).fetchone()
         if not row:
-            return False
+            return False, None
         report = json.loads(row[0])
         report["review_status"] = status
+
+        if status == "invited":
+            extra = comment.strip() if comment else ""
+            final_comment = f"{INVITED_DEFAULT_NOTE}; {extra}" if extra else INVITED_DEFAULT_NOTE
+        elif status == "not_invited":
+            final_comment = comment.strip()
+        elif comment is not None:
+            final_comment = comment.strip()
+        else:
+            # No comment supplied for waitlisted/not_reviewed -- leave
+            # whatever comment (if any) was already recorded untouched.
+            final_comment = report.get("review_comment")
+
+        report["review_comment"] = final_comment
         conn.execute(
-            "UPDATE applicants SET review_status = ?, report_json = ? WHERE file_id = ?",
-            (status, json.dumps(report, default=str), file_id),
+            "UPDATE applicants SET review_status = ?, review_comment = ?, report_json = ? WHERE file_id = ?",
+            (status, final_comment, json.dumps(report, default=str), file_id),
         )
         conn.commit()
-        return True
+        return True, final_comment
 
 
 def delete_applicant(file_id: str) -> bool:

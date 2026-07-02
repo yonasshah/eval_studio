@@ -38,14 +38,16 @@ import type { ApplicantReport, ReviewStatus } from '../types';
 import { toChecklistItems, STATUS_META, getReviewStatus } from '../types';
 import ApplicantDetail from '../ApplicantDetail';
 import { useCycles, API_BASE } from '../CycleContext';
+import StatusCommentModal, { type CommentModalRequest } from '../StatusCommentModal';
+import { statusRequiresCommentStep } from '../statusChange';
 
 const LAST_VIEWED_KEY = 'evalStudio.lastViewedFileId';
 
 // Each section (Not Reviewed/Complete, Not Reviewed/Incomplete, Invited,
-// Not Invited) has its own selection set -- selecting rows in one section
-// never affects another, per the requirement that bulk-select is scoped
-// to a single section at a time.
-type SectionKey = 'nrComplete' | 'nrIncomplete' | 'invited' | 'notInvited';
+// Not Invited, Waitlisted) has its own selection set -- selecting rows in
+// one section never affects another, per the requirement that bulk-select
+// is scoped to a single section at a time.
+type SectionKey = 'nrComplete' | 'nrIncomplete' | 'invited' | 'notInvited' | 'waitlisted';
 
 export default function TriagePage() {
   const { selectedCycleId, selectedCycle, refreshCycles } = useCycles();
@@ -64,6 +66,7 @@ export default function TriagePage() {
     nrIncomplete: new Set(),
     invited: new Set(),
     notInvited: new Set(),
+    waitlisted: new Set(),
   });
 
   // Collapse state for each section, independent of one another. All
@@ -75,7 +78,13 @@ export default function TriagePage() {
     nrIncomplete: false,
     invited: false,
     notInvited: false,
+    waitlisted: false,
   });
+
+  // When set, StatusCommentModal is open and applying the modal's comment
+  // to whatever apply() was configured to do (a single applicant's status
+  // change, or a bulk one).
+  const [commentModal, setCommentModal] = useState<CommentModalRequest | null>(null);
 
   function toggleCollapsed(key: keyof typeof collapsed) {
     setCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -83,16 +92,21 @@ export default function TriagePage() {
 
   // Resume-session prompt: only checked once per app load, not every time
   // the selected cycle changes, so switching cycles repeatedly doesn't
-  // keep re-showing "welcome back".
+  // keep re-showing "welcome back". Scoped to the selected cycle so an
+  // applicant from a different (or now-deleted) cycle doesn't trigger it,
+  // and only shown when the applicant is still Not Reviewed -- a fully
+  // reviewed applicant doesn't need a "resume" prompt.
   useEffect(() => {
     const lastId = localStorage.getItem(LAST_VIEWED_KEY);
-    if (!lastId) return;
-    fetch(`${API_BASE}/api/applicants`)
+    if (!lastId || !selectedCycleId) return;
+    fetch(`${API_BASE}/api/applicants?cycle_id=${selectedCycleId}`)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (!data) return;
         const results: ApplicantReport[] = data.results ?? [];
-        const match = results.find((r) => r.file_id === lastId);
+        const match = results.find(
+          (r) => r.file_id === lastId && getReviewStatus(r) === 'not_reviewed'
+        );
         if (match) {
           notifications.show({
             id: 'resume-session',
@@ -159,6 +173,19 @@ export default function TriagePage() {
       localStorage.setItem(LAST_VIEWED_KEY, openDetail.file_id);
     }
   }, [openDetail]);
+
+  // Whenever `reports` changes (e.g. a status/comment update lands),
+  // refresh the currently-open detail view from the matching report so
+  // there's one source of truth instead of every call site having to
+  // remember to also call setOpenDetail.
+  useEffect(() => {
+    if (!openDetail?.file_id) return;
+    const updated = reports.find((r) => r.file_id === openDetail.file_id);
+    if (updated && updated !== openDetail) {
+      setOpenDetail(updated);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reports]);
 
   const [uploadCount, setUploadCount] = useState(0);
 
@@ -308,17 +335,23 @@ export default function TriagePage() {
     }
   }
 
-  async function handleStatusChange(fileId: string | undefined, status: ReviewStatus) {
+  async function handleStatusChange(fileId: string | undefined, status: ReviewStatus, comment?: string) {
     if (!fileId) return;
     try {
       const res = await fetch(`${API_BASE}/api/applicants/${fileId}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify({ status, comment: comment ?? null }),
       });
-      if (!res.ok) throw new Error(`Server returned ${res.status}`);
+      if (!res.ok) {
+        const detail = await res.json().catch(() => null);
+        throw new Error(detail?.detail || `Server returned ${res.status}`);
+      }
+      const updated = await res.json();
       setReports((prev) =>
-        prev.map((r) => (r.file_id === fileId ? { ...r, review_status: status } : r))
+        prev.map((r) =>
+          r.file_id === fileId ? { ...r, review_status: status, review_comment: updated.review_comment ?? r.review_comment } : r
+        )
       );
       notifications.show({
         message: `Status updated to ${STATUS_META[status].label}.`,
@@ -330,10 +363,27 @@ export default function TriagePage() {
     }
   }
 
+  // Opens the comment modal for statuses that require or auto-generate one
+  // (Invited / Not Invited); everything else applies immediately, matching
+  // prior behavior.
+  function requestStatusChange(report: ApplicantReport, status: ReviewStatus) {
+    if (!report.file_id) return;
+    if (statusRequiresCommentStep(status)) {
+      setCommentModal({
+        status,
+        applicantLabel: formatApplicantLabel(report),
+        existingComment: report.review_comment,
+        apply: (comment) => handleStatusChange(report.file_id, status, comment),
+      });
+    } else {
+      handleStatusChange(report.file_id, status);
+    }
+  }
+
   // Bulk version: updates every selected file in a section to the same
-  // status. Uses allSettled so one failed request doesn't block the rest
-  // of the batch from completing.
-  async function handleBulkStatusChange(section: SectionKey, status: ReviewStatus) {
+  // status (and, if supplied, the same comment). Uses allSettled so one
+  // failed request doesn't block the rest of the batch from completing.
+  async function handleBulkStatusChange(section: SectionKey, status: ReviewStatus, comment?: string) {
     const ids = Array.from(selected[section]);
     if (ids.length === 0) return;
 
@@ -342,9 +392,12 @@ export default function TriagePage() {
         fetch(`${API_BASE}/api/applicants/${id}/status`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status }),
-        }).then((res) => {
-          if (!res.ok) throw new Error(`Server returned ${res.status}`);
+          body: JSON.stringify({ status, comment: comment ?? null }),
+        }).then(async (res) => {
+          if (!res.ok) {
+            const detail = await res.json().catch(() => null);
+            throw new Error(detail?.detail || `Server returned ${res.status}`);
+          }
           return id;
         })
       )
@@ -359,7 +412,9 @@ export default function TriagePage() {
 
     setReports((prev) =>
       prev.map((r) =>
-        r.file_id && succeededIds.has(r.file_id) ? { ...r, review_status: status } : r
+        r.file_id && succeededIds.has(r.file_id)
+          ? { ...r, review_status: status, review_comment: comment !== undefined ? (status === 'invited' ? (comment.trim() ? `MIR; ${comment.trim()}` : 'MIR') : comment) : r.review_comment }
+          : r
       )
     );
     clearSectionSelection(section);
@@ -373,6 +428,24 @@ export default function TriagePage() {
     }
     if (failedCount > 0) {
       setError(`${failedCount} of ${ids.length} status updates failed. Please try those again.`);
+    }
+  }
+
+  // Opens the comment modal (once, for the whole batch) for statuses that
+  // require or auto-generate one; the same comment is then applied to
+  // every selected applicant in the section.
+  function requestBulkStatusChange(section: SectionKey, status: ReviewStatus) {
+    const count = selected[section].size;
+    if (count === 0) return;
+    if (statusRequiresCommentStep(status)) {
+      setCommentModal({
+        status,
+        applicantLabel: `${count} selected applicant${count === 1 ? '' : 's'}`,
+        existingComment: null,
+        apply: (comment) => handleBulkStatusChange(section, status, comment),
+      });
+    } else {
+      handleBulkStatusChange(section, status);
     }
   }
 
@@ -405,6 +478,7 @@ export default function TriagePage() {
           nrIncomplete: new Set(),
           invited: new Set(),
           notInvited: new Set(),
+          waitlisted: new Set(),
         });
       }
       return !prev;
@@ -445,6 +519,7 @@ export default function TriagePage() {
   const notReviewed = ok.filter((r) => getReviewStatus(r) === 'not_reviewed');
   const invited = ok.filter((r) => getReviewStatus(r) === 'invited');
   const notInvited = ok.filter((r) => getReviewStatus(r) === 'not_invited');
+  const waitlisted = ok.filter((r) => getReviewStatus(r) === 'waitlisted');
 
   const notReviewedComplete = notReviewed.filter((r) => r.is_complete);
   const notReviewedIncomplete = notReviewed.filter((r) => !r.is_complete);
@@ -463,12 +538,12 @@ export default function TriagePage() {
 
   // Single flat ordering matching the on-screen section order (Not
   // Reviewed/Complete -> Not Reviewed/Incomplete -> Invited -> Not
-  // Invited). This is the one source of truth that "next applicant",
-  // "previous applicant", and "next unreviewed" are all derived from --
-  // since it's recomputed from current `reports` state on every render,
-  // changing an applicant's status immediately updates what counts as
-  // "next" without any special-casing.
-  const visibleOrder = [...notReviewedComplete, ...notReviewedIncomplete, ...invited, ...notInvited];
+  // Invited -> Waitlisted). This is the one source of truth that "next
+  // applicant", "previous applicant", and "next unreviewed" are all
+  // derived from -- since it's recomputed from current `reports` state on
+  // every render, changing an applicant's status immediately updates what
+  // counts as "next" without any special-casing.
+  const visibleOrder = [...notReviewedComplete, ...notReviewedIncomplete, ...invited, ...notInvited, ...waitlisted];
 
   const stillLoading = loading || loadingExisting;
 
@@ -509,8 +584,10 @@ export default function TriagePage() {
   // so they don't interfere with search, page-jump fields, etc.
   // - 'n': jump to next unreviewed applicant (works from the list view)
   // - 'Escape': close the detail view, back to the list
-  // - '1' / '2' / '3': while viewing an applicant's detail, set their
-  //   status to Not Reviewed / Invited / Not Invited respectively
+  // - '1' / '2' / '3' / '4': while viewing an applicant's detail, set their
+  //   status to Not Reviewed / Invited / Not Invited / Waitlisted
+  //   respectively. Invited/Not Invited route through requestStatusChange
+  //   so the required/auto-generated comment modal still appears.
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       const target = e.target as HTMLElement;
@@ -524,12 +601,11 @@ export default function TriagePage() {
       } else if (e.key === 'Escape' && openDetail) {
         e.preventDefault();
         setOpenDetail(null);
-      } else if (openDetail && ['1', '2', '3'].includes(e.key)) {
+      } else if (openDetail && ['1', '2', '3', '4'].includes(e.key)) {
         e.preventDefault();
-        const statusOrder: ReviewStatus[] = ['not_reviewed', 'invited', 'not_invited'];
+        const statusOrder: ReviewStatus[] = ['not_reviewed', 'invited', 'not_invited', 'waitlisted'];
         const status = statusOrder[parseInt(e.key, 10) - 1];
-        handleStatusChange(openDetail.file_id, status);
-        setOpenDetail((prev) => (prev ? { ...prev, review_status: status } : prev));
+        requestStatusChange(openDetail, status);
       }
     }
     window.addEventListener('keydown', handleKeyDown);
@@ -555,6 +631,7 @@ export default function TriagePage() {
       'Applicant ID',
       'Completeness',
       'Review Status',
+      'Comments',
       'Missing Items',
       'Total Pages',
       'Filename',
@@ -567,6 +644,7 @@ export default function TriagePage() {
         r.applicant_id ?? '',
         r.is_complete ? 'Complete' : 'Missing items',
         STATUS_META[getReviewStatus(r)].label,
+        r.review_comment ?? '',
         (r.missing_items ?? []).join('; '),
         String(r.total_pages ?? ''),
         r.filename,
@@ -754,7 +832,7 @@ export default function TriagePage() {
                 <Stack gap="xs">
                 <BulkActionBar
                   count={selected.nrComplete.size}
-                  onChangeStatus={(status) => handleBulkStatusChange('nrComplete', status)}
+                  onChangeStatus={(status) => requestBulkStatusChange('nrComplete', status)}
                   onClear={() => clearSectionSelection('nrComplete')}
                 />
 
@@ -766,7 +844,7 @@ export default function TriagePage() {
                     onToggle={() => toggleExpand(r.file_id)}
                     onOpenDetail={() => setOpenDetail(r)}
                     onDelete={() => handleDelete(r.file_id)}
-                    onStatusChange={(status) => handleStatusChange(r.file_id, status)}
+                    onStatusChange={(status) => requestStatusChange(r, status)}
                     selectionMode={selectionMode}
                     checked={!!r.file_id && selected.nrComplete.has(r.file_id)}
                     onCheck={() => toggleSelected('nrComplete', r.file_id)}
@@ -809,7 +887,7 @@ export default function TriagePage() {
                 <Stack gap="xs">
                 <BulkActionBar
                   count={selected.nrIncomplete.size}
-                  onChangeStatus={(status) => handleBulkStatusChange('nrIncomplete', status)}
+                  onChangeStatus={(status) => requestBulkStatusChange('nrIncomplete', status)}
                   onClear={() => clearSectionSelection('nrIncomplete')}
                 />
 
@@ -821,7 +899,7 @@ export default function TriagePage() {
                     onToggle={() => toggleExpand(r.file_id)}
                     onOpenDetail={() => setOpenDetail(r)}
                     onDelete={() => handleDelete(r.file_id)}
-                    onStatusChange={(status) => handleStatusChange(r.file_id, status)}
+                    onStatusChange={(status) => requestStatusChange(r, status)}
                     selectionMode={selectionMode}
                     checked={!!r.file_id && selected.nrIncomplete.has(r.file_id)}
                     onCheck={() => toggleSelected('nrIncomplete', r.file_id)}
@@ -858,7 +936,7 @@ export default function TriagePage() {
               <Collapse expanded={!collapsed.invited}>
               <BulkActionBar
                 count={selected.invited.size}
-                onChangeStatus={(status) => handleBulkStatusChange('invited', status)}
+                onChangeStatus={(status) => requestBulkStatusChange('invited', status)}
                 onClear={() => clearSectionSelection('invited')}
               />
 
@@ -871,7 +949,7 @@ export default function TriagePage() {
                     onToggle={() => toggleExpand(r.file_id)}
                     onOpenDetail={() => setOpenDetail(r)}
                     onDelete={() => handleDelete(r.file_id)}
-                    onStatusChange={(status) => handleStatusChange(r.file_id, status)}
+                    onStatusChange={(status) => requestStatusChange(r, status)}
                     selectionMode={selectionMode}
                     checked={!!r.file_id && selected.invited.has(r.file_id)}
                     onCheck={() => toggleSelected('invited', r.file_id)}
@@ -906,7 +984,7 @@ export default function TriagePage() {
               <Collapse expanded={!collapsed.notInvited}>
               <BulkActionBar
                 count={selected.notInvited.size}
-                onChangeStatus={(status) => handleBulkStatusChange('notInvited', status)}
+                onChangeStatus={(status) => requestBulkStatusChange('notInvited', status)}
                 onClear={() => clearSectionSelection('notInvited')}
               />
 
@@ -919,13 +997,61 @@ export default function TriagePage() {
                     onToggle={() => toggleExpand(r.file_id)}
                     onOpenDetail={() => setOpenDetail(r)}
                     onDelete={() => handleDelete(r.file_id)}
-                    onStatusChange={(status) => handleStatusChange(r.file_id, status)}
+                    onStatusChange={(status) => requestStatusChange(r, status)}
                     selectionMode={selectionMode}
                     checked={!!r.file_id && selected.notInvited.has(r.file_id)}
                     onCheck={() => toggleSelected('notInvited', r.file_id)}
                   />
                 ))}
                 {notInvited.length === 0 && (
+                  <Text size="sm" c="dimmed" pl="xl">
+                    None yet.
+                  </Text>
+                )}
+              </Stack>
+              </Collapse>
+            </div>
+
+            <Divider />
+
+            <div>
+              <Group justify="space-between" mb="xs">
+                <CollapsibleHeader isOpen={!collapsed.waitlisted} onToggle={() => toggleCollapsed('waitlisted')}>
+                  <Text fw={600}>Waitlisted for Interview ({waitlisted.length})</Text>
+                </CollapsibleHeader>
+                {selectionMode && waitlisted.length > 0 && (
+                  <SelectAllToggle
+                    allIds={waitlisted.map((r) => r.file_id)}
+                    selectedIds={selected.waitlisted}
+                    onSelectAll={() => selectAllInSection('waitlisted', waitlisted.map((r) => r.file_id))}
+                    onClear={() => clearSectionSelection('waitlisted')}
+                  />
+                )}
+              </Group>
+
+              <Collapse expanded={!collapsed.waitlisted}>
+              <BulkActionBar
+                count={selected.waitlisted.size}
+                onChangeStatus={(status) => requestBulkStatusChange('waitlisted', status)}
+                onClear={() => clearSectionSelection('waitlisted')}
+              />
+
+              <Stack gap="xs">
+                {waitlisted.map((r) => (
+                  <ApplicantRow
+                    key={r.file_id}
+                    report={r}
+                    expanded={expandedId === r.file_id}
+                    onToggle={() => toggleExpand(r.file_id)}
+                    onOpenDetail={() => setOpenDetail(r)}
+                    onDelete={() => handleDelete(r.file_id)}
+                    onStatusChange={(status) => requestStatusChange(r, status)}
+                    selectionMode={selectionMode}
+                    checked={!!r.file_id && selected.waitlisted.has(r.file_id)}
+                    onCheck={() => toggleSelected('waitlisted', r.file_id)}
+                  />
+                ))}
+                {waitlisted.length === 0 && (
                   <Text size="sm" c="dimmed" pl="xl">
                     None yet.
                   </Text>
@@ -963,10 +1089,7 @@ export default function TriagePage() {
               report={openDetail}
               apiBase={API_BASE}
               onBack={() => setOpenDetail(null)}
-              onStatusChange={(status) => {
-                handleStatusChange(openDetail.file_id, status);
-                setOpenDetail((prev) => (prev ? { ...prev, review_status: status } : prev));
-              }}
+              onStatusChange={(status) => requestStatusChange(openDetail, status)}
               onNext={() => jumpToAdjacent('next')}
               onPrev={() => jumpToAdjacent('prev')}
               hasNext={(() => {
@@ -980,11 +1103,14 @@ export default function TriagePage() {
             />
             <Text size="xs" c="dimmed" ta="center">
               Shortcuts: <strong>1</strong> Not Reviewed · <strong>2</strong> Invited ·{' '}
-              <strong>3</strong> Not Invited · <strong>Esc</strong> back to list
+              <strong>3</strong> Not Invited · <strong>4</strong> Waitlisted ·{' '}
+              <strong>Esc</strong> back to list
             </Text>
           </Stack>
         )}
       </div>
+
+      <StatusCommentModal request={commentModal} onClose={() => setCommentModal(null)} />
     </Stack>
   );
 }
@@ -1161,6 +1287,11 @@ function ApplicantRow({
 
       {expanded && !selectionMode && (
         <Stack gap="sm" mt="sm" pt="sm" style={{ borderTop: '1px solid var(--mantine-color-gray-3)' }}>
+          {report.review_comment && report.review_comment.trim() && (
+            <Text size="xs" c="dimmed">
+              Note: {report.review_comment}
+            </Text>
+          )}
           <Group justify="space-between">
             <Text size="sm" fw={500} c="dimmed">
               Required items

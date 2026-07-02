@@ -23,7 +23,7 @@ export interface EvaluatorInfo {
   letter_page: number | null;
 }
 
-export type ReviewStatus = 'not_reviewed' | 'invited' | 'not_invited';
+export type ReviewStatus = 'not_reviewed' | 'invited' | 'not_invited' | 'waitlisted';
 
 export interface ApplicantReport {
   filename: string;
@@ -40,6 +40,10 @@ export interface ApplicantReport {
   file_id?: string;
   error?: string;
   review_status?: ReviewStatus;
+  // Justification for not_invited (required), auto "MIR" note (+ optional
+  // extra text) for invited, or an optional free-text note for
+  // waitlisted/not_reviewed.
+  review_comment?: string | null;
   cycle_id?: string;
 }
 
@@ -110,6 +114,7 @@ export const STATUS_META: Record<ReviewStatus, { label: string; color: string }>
   not_reviewed: { label: 'Not Reviewed', color: 'gray' },
   invited: { label: 'Invited to Interview', color: 'teal' },
   not_invited: { label: 'Not Invited to Interview', color: 'red' },
+  waitlisted: { label: 'Waitlisted for Interview', color: 'yellow' },
 };
 
 export function getReviewStatus(report: ApplicantReport): ReviewStatus {

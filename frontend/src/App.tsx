@@ -1,6 +1,12 @@
-import { useState, useEffect } from 'react'; // Added useEffect import
-import { AppShell, Title, Text, Group, UnstyledButton, NavLink, Stack } from '@mantine/core';
-import { IconListCheck, IconArchive, IconLayoutDashboard } from '@tabler/icons-react';
+import { useState } from 'react';
+import { AppShell, Title, Text, Group, UnstyledButton, NavLink, Stack, ActionIcon, Tooltip } from '@mantine/core';
+import {
+  IconListCheck,
+  IconArchive,
+  IconLayoutDashboard,
+  IconLayoutSidebarLeftCollapse,
+  IconLayoutSidebarLeftExpand,
+} from '@tabler/icons-react';
 import { CycleProvider } from './CycleContext';
 import CycleSwitcher from './components/CycleSwitcher';
 import TriagePage from './pages/TriagePage';
@@ -10,30 +16,39 @@ import evalStudioIcon from './assets/eval-studio-icon.svg';
 
 type PageKey = 'triage' | 'archive' | 'dashboard';
 
+const NAVBAR_COLLAPSED_KEY = 'evalStudio.navbarCollapsed';
+
+const NAV_ITEMS: { key: PageKey; label: string; icon: typeof IconListCheck }[] = [
+  { key: 'triage', label: 'Triage', icon: IconListCheck },
+  { key: 'archive', label: 'Archive', icon: IconArchive },
+  { key: 'dashboard', label: 'Dashboard', icon: IconLayoutDashboard },
+];
+
 function AppShellContent() {
   const [page, setPage] = useState<PageKey>('triage');
-
-  // BACKGROUND SHUTDOWN LISTENER
-  useEffect(() => {
-    const handleUnload = () => {
-      // COMMENT THIS OUT DURING NORMAL DEV WORK
-      // UNCOMMENT THIS FOR FINAL PRODUCTION PYINSTALLER BUILD
-      navigator.sendBeacon("/api/shutdown");
-    };
-
-    window.addEventListener("beforeunload", handleUnload);
-
-    return () => {
-      window.removeEventListener("beforeunload", handleUnload);
-    };
-  }, []);
+  const [collapsed, setCollapsed] = useState<boolean>(
+    () => localStorage.getItem(NAVBAR_COLLAPSED_KEY) === 'true'
+  );
 
   function goHome() {
     setPage('triage');
   }
 
+  function toggleCollapsed() {
+    setCollapsed((prev) => {
+      const next = !prev;
+      localStorage.setItem(NAVBAR_COLLAPSED_KEY, String(next));
+      return next;
+    });
+  }
+
   return (
-    <AppShell header={{ height: 64 }} navbar={{ width: 220, breakpoint: 'sm' }} footer={{ height: 48 }} padding="md">
+    <AppShell
+      header={{ height: 64 }}
+      navbar={{ width: collapsed ? 72 : 220, breakpoint: 'sm' }}
+      footer={{ height: 48 }}
+      padding="md"
+    >
       <AppShell.Header>
         <Group h="100%" px="md" justify="space-between">
           <UnstyledButton onClick={goHome} style={{ display: 'flex', alignItems: 'center' }}>
@@ -51,33 +66,53 @@ function AppShellContent() {
         </Group>
       </AppShell.Header>
 
-      <AppShell.Navbar p="md">
+      <AppShell.Navbar
+        p={collapsed ? 'xs' : 'md'}
+        style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}
+      >
         <Stack gap={4}>
-          <NavLink
-            label="Triage"
-            leftSection={<IconListCheck size={18} />}
-            active={page === 'triage'}
-            onClick={() => setPage('triage')}
-            variant="light"
-            color="navy"
-          />
-          <NavLink
-            label="Archive"
-            leftSection={<IconArchive size={18} />}
-            active={page === 'archive'}
-            onClick={() => setPage('archive')}
-            variant="light"
-            color="navy"
-          />
-          <NavLink
-            label="Dashboard"
-            leftSection={<IconLayoutDashboard size={18} />}
-            active={page === 'dashboard'}
-            onClick={() => setPage('dashboard')}
-            variant="light"
-            color="navy"
-          />
+          {NAV_ITEMS.map(({ key, label, icon: Icon }) =>
+            collapsed ? (
+              <Tooltip key={key} label={label} position="right" withArrow>
+                <ActionIcon
+                  size="lg"
+                  variant={page === key ? 'light' : 'subtle'}
+                  color="navy"
+                  onClick={() => setPage(key)}
+                  style={{ alignSelf: 'center' }}
+                >
+                  <Icon size={20} />
+                </ActionIcon>
+              </Tooltip>
+            ) : (
+              <NavLink
+                key={key}
+                label={label}
+                leftSection={<Icon size={18} />}
+                active={page === key}
+                onClick={() => setPage(key)}
+                variant="light"
+                color="navy"
+              />
+            )
+          )}
         </Stack>
+
+        <Tooltip label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} position="right" withArrow>
+          <ActionIcon
+            variant="subtle"
+            color="gray"
+            size="lg"
+            onClick={toggleCollapsed}
+            style={{ alignSelf: collapsed ? 'center' : 'flex-end' }}
+          >
+            {collapsed ? (
+              <IconLayoutSidebarLeftExpand size={20} />
+            ) : (
+              <IconLayoutSidebarLeftCollapse size={20} />
+            )}
+          </ActionIcon>
+        </Tooltip>
       </AppShell.Navbar>
 
       <AppShell.Main>

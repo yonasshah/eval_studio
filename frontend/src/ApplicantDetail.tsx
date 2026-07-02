@@ -20,10 +20,12 @@ import {
   IconX,
   IconZoomIn,
   IconZoomOut,
-  IconArrowsMaximize,
+  IconArrowAutofitContent,
+  IconArrowAutofitWidth,
   IconChevronDown,
   IconChevronLeft,
   IconChevronRight,
+  IconPencil,
 } from '@tabler/icons-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
@@ -46,6 +48,22 @@ const MAX_SCALE = 3.0;
 const SCALE_STEP = 0.2;
 const DEFAULT_SCALE = 1.3;
 const THUMBNAIL_SCALE = 0.18;
+
+// The viewer's height is expressed relative to the viewport (rather than a
+// fixed pixel value) so the reader gets as much room as the window allows
+// -- combined with "Fit Page" mode below, this is what lets a full CAAPID
+// page display at a readable size with no scrolling, using only the
+// Previous/Next (or arrow-key) controls to move between pages.
+const VIEWER_HEIGHT = 'calc(100vh - 260px)';
+const VIEWER_MIN_HEIGHT = 420;
+
+// 'page': scale computed so the ENTIRE page fits inside the viewer with no
+//   scrolling needed -- the default, since that's what lets arrow-key /
+//   Previous-Next navigation replace scrolling.
+// 'width': fits the page's width only (existing behavior kept as an
+//   option for anyone who wants to scroll a wider render for readability).
+// 'custom': manual zoom via the +/- buttons or Reset.
+type FitMode = 'page' | 'width' | 'custom';
 
 interface Props {
   report: ApplicantReport;
@@ -77,7 +95,7 @@ export default function ApplicantDetail({
   const [currentPage, setCurrentPage] = useState(1);
   const [pageInput, setPageInput] = useState<string | number>(1);
   const [scale, setScale] = useState(DEFAULT_SCALE);
-  const [fitWidth, setFitWidth] = useState(false);
+  const [fitMode, setFitMode] = useState<FitMode>('page');
   const [loadingPdf, setLoadingPdf] = useState(true);
   const [pdfError, setPdfError] = useState<string | null>(null);
   const [thumbnails, setThumbnails] = useState<Record<number, string>>({});
@@ -114,9 +132,19 @@ export default function ApplicantDetail({
       const baseViewport = page.getViewport({ scale: 1 });
 
       let effectiveScale = useScale;
-      if (fitWidth && viewerScrollRef.current) {
+      if (fitMode !== 'custom' && viewerScrollRef.current) {
         const containerWidth = viewerScrollRef.current.clientWidth - 24;
-        effectiveScale = containerWidth / baseViewport.width;
+        const widthScale = containerWidth / baseViewport.width;
+
+        if (fitMode === 'width') {
+          effectiveScale = widthScale;
+        } else {
+          // 'page': constrain by whichever dimension is tighter so the
+          // whole page -- not just its width -- fits without scrolling.
+          const containerHeight = viewerScrollRef.current.clientHeight - 24;
+          const heightScale = containerHeight / baseViewport.height;
+          effectiveScale = Math.min(widthScale, heightScale);
+        }
       }
 
       const viewport = page.getViewport({ scale: effectiveScale });
@@ -140,16 +168,16 @@ export default function ApplicantDetail({
         }
       }
     },
-    [fitWidth]
+    [fitMode]
   );
 
   useEffect(() => {
     if (!pdfDoc || !canvasRef.current) return;
     renderPage(pdfDoc, currentPage, canvasRef.current, scale);
-  }, [pdfDoc, currentPage, scale, fitWidth, renderPage]);
+  }, [pdfDoc, currentPage, scale, fitMode, renderPage]);
 
   useEffect(() => {
-    if (!fitWidth) return;
+    if (fitMode === 'custom') return;
     function handleResize() {
       if (pdfDoc && canvasRef.current) {
         renderPage(pdfDoc, currentPage, canvasRef.current, scale);
@@ -157,7 +185,7 @@ export default function ApplicantDetail({
     }
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, [fitWidth, pdfDoc, currentPage, scale, renderPage]);
+  }, [fitMode, pdfDoc, currentPage, scale, renderPage]);
 
   useEffect(() => {
     if (!pdfDoc) return;
@@ -216,19 +244,16 @@ export default function ApplicantDetail({
   }
 
   function zoomIn() {
-    setFitWidth(false);
+    setFitMode('custom');
     setScale((s) => Math.min(MAX_SCALE, Math.round((s + SCALE_STEP) * 100) / 100));
   }
   function zoomOut() {
-    setFitWidth(false);
+    setFitMode('custom');
     setScale((s) => Math.max(MIN_SCALE, Math.round((s - SCALE_STEP) * 100) / 100));
   }
   function resetZoom() {
-    setFitWidth(false);
+    setFitMode('custom');
     setScale(DEFAULT_SCALE);
-  }
-  function toggleFitWidth() {
-    setFitWidth((prev) => !prev);
   }
 
   useEffect(() => {
@@ -258,10 +283,14 @@ export default function ApplicantDetail({
 
   const status = getReviewStatus(report);
   const statusMeta = STATUS_META[status];
+  // Invited/Not Invited always carry a review_comment (auto "MIR" note, or
+  // the required justification); Waitlisted/Not Reviewed only have one if
+  // the reviewer chose to add one.
+  const hasComment = !!report.review_comment && report.review_comment.trim().length > 0;
 
   return (
     <Stack gap="md">
-      <Group justify="space-between">
+      <Group justify="space-between" wrap="wrap">
         <Group gap="xs">
           <Button variant="subtle" leftSection={<IconArrowLeft size={16} />} onClick={onBack}>
             Back to list
@@ -288,24 +317,40 @@ export default function ApplicantDetail({
           )}
         </Group>
 
-        <Menu shadow="md" width={220}>
-          <Menu.Target>
-            <Button
-              variant="light"
-              color={statusMeta.color}
-              rightSection={<IconChevronDown size={14} />}
-            >
-              {statusMeta.label}
-            </Button>
-          </Menu.Target>
-          <Menu.Dropdown>
-            {(Object.keys(STATUS_META) as ReviewStatus[]).map((key) => (
-              <Menu.Item key={key} onClick={() => onStatusChange(key)}>
-                {STATUS_META[key].label}
-              </Menu.Item>
-            ))}
-          </Menu.Dropdown>
-        </Menu>
+        <Group gap="xs" align="center">
+          {hasComment && (
+            <Tooltip label={report.review_comment}>
+              <Text size="xs" c="dimmed" style={{ maxWidth: 260 }} truncate>
+                Note: {report.review_comment}
+              </Text>
+            </Tooltip>
+          )}
+          {(status === 'invited' || status === 'not_invited' || status === 'waitlisted') && (
+            <Tooltip label="Edit note">
+              <ActionIcon variant="subtle" color="gray" onClick={() => onStatusChange(status)}>
+                <IconPencil size={16} />
+              </ActionIcon>
+            </Tooltip>
+          )}
+          <Menu shadow="md" width={220}>
+            <Menu.Target>
+              <Button
+                variant="light"
+                color={statusMeta.color}
+                rightSection={<IconChevronDown size={14} />}
+              >
+                {statusMeta.label}
+              </Button>
+            </Menu.Target>
+            <Menu.Dropdown>
+              {(Object.keys(STATUS_META) as ReviewStatus[]).map((key) => (
+                <Menu.Item key={key} onClick={() => onStatusChange(key)}>
+                  {STATUS_META[key].label}
+                </Menu.Item>
+              ))}
+            </Menu.Dropdown>
+          </Menu>
+        </Group>
       </Group>
 
       <Group align="flex-start" gap="md" wrap="nowrap">
@@ -407,25 +452,34 @@ export default function ApplicantDetail({
 
                 <Group gap={4}>
                   <Tooltip label="Zoom out">
-                    <ActionIcon variant="subtle" color="gray" onClick={zoomOut} disabled={fitWidth}>
+                    <ActionIcon variant="subtle" color="gray" onClick={zoomOut} disabled={fitMode !== 'custom'}>
                       <IconZoomOut size={16} />
                     </ActionIcon>
                   </Tooltip>
                   <Text size="xs" c="dimmed" style={{ minWidth: 40, textAlign: 'center' }}>
-                    {fitWidth ? 'Fit' : `${Math.round(scale * 100)}%`}
+                    {fitMode === 'custom' ? `${Math.round(scale * 100)}%` : 'Fit'}
                   </Text>
                   <Tooltip label="Zoom in">
-                    <ActionIcon variant="subtle" color="gray" onClick={zoomIn} disabled={fitWidth}>
+                    <ActionIcon variant="subtle" color="gray" onClick={zoomIn} disabled={fitMode !== 'custom'}>
                       <IconZoomIn size={16} />
+                    </ActionIcon>
+                  </Tooltip>
+                  <Tooltip label="Fit entire page (no scrolling)">
+                    <ActionIcon
+                      variant={fitMode === 'page' ? 'filled' : 'subtle'}
+                      color="navy"
+                      onClick={() => setFitMode('page')}
+                    >
+                      <IconArrowAutofitContent size={16} />
                     </ActionIcon>
                   </Tooltip>
                   <Tooltip label="Fit to width">
                     <ActionIcon
-                      variant={fitWidth ? 'filled' : 'subtle'}
+                      variant={fitMode === 'width' ? 'filled' : 'subtle'}
                       color="navy"
-                      onClick={toggleFitWidth}
+                      onClick={() => setFitMode('width')}
                     >
-                      <IconArrowsMaximize size={16} />
+                      <IconArrowAutofitWidth size={16} />
                     </ActionIcon>
                   </Tooltip>
                   <Button size="xs" variant="default" onClick={resetZoom}>
@@ -434,12 +488,20 @@ export default function ApplicantDetail({
                 </Group>
               </Group>
 
-              <ScrollArea h={760} ref={viewerScrollRef}>
-                <canvas ref={canvasRef} style={{ maxWidth: '100%' }} />
+              <ScrollArea
+                h={VIEWER_HEIGHT}
+                mih={VIEWER_MIN_HEIGHT}
+                ref={viewerScrollRef}
+                type={fitMode === 'page' ? 'never' : 'auto'}
+              >
+                <Stack align="center" justify="center" mih={VIEWER_MIN_HEIGHT}>
+                  <canvas ref={canvasRef} style={{ maxWidth: '100%' }} />
+                </Stack>
               </ScrollArea>
 
               <Text size="xs" c="dimmed" ta="center">
-                Use ← → or Page Up/Down to navigate
+                Use ← → or Page Up/Down to navigate — "Fit Page" (the default) shows the whole
+                page with no scrolling needed.
               </Text>
             </Stack>
           )}
@@ -450,7 +512,7 @@ export default function ApplicantDetail({
             <Text size="xs" fw={500} c="dimmed" ta="center">
               Pages
             </Text>
-            <ScrollArea h={760} type="auto">
+            <ScrollArea h={VIEWER_HEIGHT} mih={VIEWER_MIN_HEIGHT} type="auto">
               <Stack gap={6} pr={6}>
                 {thumbnailList.map((pageNum) => (
                   <div

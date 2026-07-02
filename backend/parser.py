@@ -294,51 +294,94 @@ def _extract_applicant_identity(doc) -> tuple[str | None, str | None]:
     first one. The pattern requires a comma (Last, First) to avoid
     matching a bare single-word line like 'Kant' that appears separately
     as the value of the 'Last Name:' field.
+
+    CAAPID pages also contain "Country, State of"-shaped values (e.g.
+    citizenship/country of birth fields such as "Palestine, State of" or
+    "Korea, Republic of") which match this same "Word, Word" comma pattern.
+    When more than one candidate line matches on a page, picking the first
+    one in extraction order is unreliable and can grab the country field
+    instead of the applicant's actual name. To disambiguate, we use the
+    fact that the applicant's name and "Applicant ID:" are printed
+    together as part of the same repeated page header -- so among all
+    comma-pattern candidates, we pick whichever sits closest (vertically)
+    to the "Applicant ID:" line, rather than just the first match found.
     """
     if len(doc) == 0:
         return None, None
-    text = doc[0].get_text()
-    name = None
-    for line in text.split("\n"):
-        stripped = line.strip()
-        if re.match(r"^[A-Za-z'\-]+,\s*[A-Za-z'\- ]+$", stripped):
-            name = stripped
+
+    lines = _page_lines_with_boxes(doc[0])
+
+    id_pattern = re.compile(r"Applicant ID:\s*(\d+)")
+    applicant_id = None
+    id_bbox = None
+    for text, bbox in lines:
+        m = id_pattern.search(text)
+        if m:
+            applicant_id = m.group(1)
+            id_bbox = bbox
             break
-    id_match = re.search(r"Applicant ID:\s*(\d+)", text)
-    applicant_id = id_match.group(1) if id_match else None
+    if applicant_id is None:
+        # Fallback in case the ID line's spans didn't come through cleanly
+        # in _page_lines_with_boxes for some reason.
+        full_text = doc[0].get_text()
+        m = id_pattern.search(full_text)
+        applicant_id = m.group(1) if m else None
+
+    name_pattern = re.compile(r"^[A-Za-z'\-]+,\s*[A-Za-z'\- ]+$")
+    candidates = [
+        (text.strip(), bbox) for text, bbox in lines if name_pattern.match(text.strip())
+    ]
+
+    name = None
+    if candidates:
+        if id_bbox is not None:
+            candidates.sort(key=lambda c: abs(c[1].y0 - id_bbox.y0))
+        name = candidates[0][0]
+
     return name, applicant_id
 
 
 def parse_caapid_pdf(path: str, filename: str | None = None) -> ApplicantReport:
     doc = fitz.open(path)
-    name, applicant_id = _extract_applicant_identity(doc)
+    try:
+        name, applicant_id = _extract_applicant_identity(doc)
 
-    report = ApplicantReport(
-        filename=filename or path,
-        applicant_name=name,
-        applicant_id=applicant_id,
-        total_pages=len(doc),
-    )
+        report = ApplicantReport(
+            filename=filename or path,
+            applicant_name=name,
+            applicant_id=applicant_id,
+            total_pages=len(doc),
+        )
 
-    section_results = _find_section_headers(doc)
-    report.sections = list(section_results.values())
+        section_results = _find_section_headers(doc)
+        report.sections = list(section_results.values())
 
-    report.evaluators = _find_evaluators(doc)
-    dean_principal_found = any(e.is_dean_or_principal for e in report.evaluators)
+        report.evaluators = _find_evaluators(doc)
+        dean_principal_found = any(e.is_dean_or_principal for e in report.evaluators)
 
-    report.employment_found, report.employment_page = _find_employment(doc)
+        report.employment_found, report.employment_page = _find_employment(doc)
 
-    missing = [s.label for s in report.sections if not s.found]
-    if not dean_principal_found:
-        missing.append("Dean/Principal evaluator letter")
-    if not report.employment_found:
-        missing.append("Employment")
+        missing = [s.label for s in report.sections if not s.found]
+        if not dean_principal_found:
+            missing.append("Dean/Principal evaluator letter")
+        if not report.employment_found:
+            missing.append("Employment")
 
-    report.missing_items = missing
-    report.is_complete = len(missing) == 0
+        report.missing_items = missing
+        report.is_complete = len(missing) == 0
 
-    doc.close()
-    return report
+        return report
+    finally:
+        # Previously doc.close() only ran on the success path -- if any of
+        # the parsing steps above raised (e.g. a malformed/unusual PDF),
+        # the fitz.Document was left open. On Windows especially, PyMuPDF
+        # holds an OS-level lock on the file until close() runs, so a
+        # leaked handle here would make the caller's cleanup
+        # (os.remove(dest_path) in main.py's except block) fail with a
+        # PermissionError instead of actually deleting the bad upload.
+        # finally guarantees close() runs on every exit path, exception or
+        # not.
+        doc.close()
 
 
 if __name__ == "__main__":
