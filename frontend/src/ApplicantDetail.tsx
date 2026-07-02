@@ -50,11 +50,10 @@ const DEFAULT_SCALE = 1.3;
 const THUMBNAIL_SCALE = 0.18;
 
 // The viewer's height is expressed relative to the viewport (rather than a
-// fixed pixel value) so the reader gets as much room as the window allows
-// -- combined with "Fit Page" mode below, this is what lets a full CAAPID
-// page display at a readable size with no scrolling, using only the
-// Previous/Next (or arrow-key) controls to move between pages.
-const VIEWER_HEIGHT = 'calc(100vh - 260px)';
+// fixed pixel value) so the reader gets as much room as the window allows.
+// Increased from 260px offset to 180px to give more vertical space since
+// the bottom area was underutilised.
+const VIEWER_HEIGHT = 'calc(100vh - 180px)';
 const VIEWER_MIN_HEIGHT = 420;
 
 // 'page': scale computed so the ENTIRE page fits inside the viewer with no
@@ -221,11 +220,7 @@ export default function ApplicantDetail({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pdfDoc]);
 
-  // Keep the active thumbnail scrolled into view whenever the page
-  // changes -- without this, jumping to e.g. page 43 via a checklist
-  // button updates the highlight correctly, but if that thumbnail is far
-  // down the sidebar's scroll area, it's invisible and looks like nothing
-  // happened.
+  // Keep the active thumbnail scrolled into view whenever the page changes.
   useEffect(() => {
     activeThumbnailRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }, [currentPage]);
@@ -243,6 +238,12 @@ export default function ApplicantDetail({
     else setPageInput(currentPage);
   }
 
+  // BUG FIX: zoom buttons previously had `disabled={fitMode !== 'custom'}`,
+  // which meant clicking them while in 'page' or 'width' fit mode was
+  // blocked at the DOM level -- the onClick never fired, so setFitMode
+  // ('custom') was never called, and the zoom appeared stuck until the
+  // user clicked Reset. Fix: always allow the click; each zoom handler
+  // already calls setFitMode('custom') as its first action.
   function zoomIn() {
     setFitMode('custom');
     setScale((s) => Math.min(MAX_SCALE, Math.round((s + SCALE_STEP) * 100) / 100));
@@ -283,9 +284,6 @@ export default function ApplicantDetail({
 
   const status = getReviewStatus(report);
   const statusMeta = STATUS_META[status];
-  // Invited/Not Invited always carry a review_comment (auto "MIR" note, or
-  // the required justification); Waitlisted/Not Reviewed only have one if
-  // the reviewer chose to add one.
   const hasComment = !!report.review_comment && report.review_comment.trim().length > 0;
 
   return (
@@ -452,7 +450,7 @@ export default function ApplicantDetail({
 
                 <Group gap={4}>
                   <Tooltip label="Zoom out">
-                    <ActionIcon variant="subtle" color="gray" onClick={zoomOut} disabled={fitMode !== 'custom'}>
+                    <ActionIcon variant="subtle" color="gray" onClick={zoomOut}>
                       <IconZoomOut size={16} />
                     </ActionIcon>
                   </Tooltip>
@@ -460,7 +458,7 @@ export default function ApplicantDetail({
                     {fitMode === 'custom' ? `${Math.round(scale * 100)}%` : 'Fit'}
                   </Text>
                   <Tooltip label="Zoom in">
-                    <ActionIcon variant="subtle" color="gray" onClick={zoomIn} disabled={fitMode !== 'custom'}>
+                    <ActionIcon variant="subtle" color="gray" onClick={zoomIn}>
                       <IconZoomIn size={16} />
                     </ActionIcon>
                   </Tooltip>

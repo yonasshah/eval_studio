@@ -7,6 +7,8 @@ CAAPID application PDF parser. Determines, per applicant:
      occupation, scoped strictly to EVALUATOR INFORMATION blocks (avoids false
      hits on job titles like "Principal Dentist and Owner" in work experience).
   3. Whether an "Employment" (compensated experience) entry exists.
+  4. ECE GPA, TOEFL total score, aggregated dental experience hours, and
+     applicant country -- displayed in the checklist for quick review.
 
 Built on PyMuPDF (fitz) instead of pdfplumber so that, in addition to page
 numbers, we get exact text bounding boxes -- needed later to highlight the
@@ -59,9 +61,15 @@ class ApplicantReport:
     evaluators: list[EvaluatorInfo] = field(default_factory=list)
     employment_found: bool = False
     employment_page: int | None = None
-    employment_note: str = "default rule: any 'Recognition Type: Compensated' entry -- confirm with stakeholder"
+    employment_note: str = "Any compensated dental/healthcare experience"
     is_complete: bool = False
     missing_items: list[str] = field(default_factory=list)
+    # New parsed data fields
+    ece_gpa: str | None = None
+    toefl_total: float | None = None
+    toefl_is_new_scale: bool = False
+    dental_experience_hours: int | None = None
+    applicant_country: str | None = None
 
     def to_dict(self):
         return asdict(self)
@@ -206,8 +214,7 @@ def _parse_title_occupation(block_text: str) -> tuple[str, str]:
 def _extract_evaluator_name(doc, page_idx: int) -> str:
     """
     The evaluator's name is the first line immediately following the
-    EVALUATOR INFORMATION header, in visual top-to-bottom order, e.g.
-    'EVALUATOR INFORMATION' -> 'Renu Bala Sroa' -> 'Title:' -> 'Govt' ...
+    EVALUATOR INFORMATION header, in visual top-to-bottom order.
     """
     lines = _page_lines_with_boxes(doc[page_idx])
     lines_sorted = sorted(lines, key=lambda lb: (round(lb[1].y0), lb[1].x0))
@@ -287,24 +294,7 @@ def _extract_applicant_identity(doc) -> tuple[str | None, str | None]:
     """
     Pull applicant name + ID from the repeated page header/footer text, e.g.
     'Kant, Disha' / 'Applicant ID:7563886789'. These appear as their own
-    lines somewhere on page 1, but NOT necessarily as the first line --
-    PyMuPDF's block-reading order can place the main body content (e.g.
-    'BIOGRAPHIC INFORMATION') before the page-corner header text it
-    visually follows. So we search every line on the page, not just the
-    first one. The pattern requires a comma (Last, First) to avoid
-    matching a bare single-word line like 'Kant' that appears separately
-    as the value of the 'Last Name:' field.
-
-    CAAPID pages also contain "Country, State of"-shaped values (e.g.
-    citizenship/country of birth fields such as "Palestine, State of" or
-    "Korea, Republic of") which match this same "Word, Word" comma pattern.
-    When more than one candidate line matches on a page, picking the first
-    one in extraction order is unreliable and can grab the country field
-    instead of the applicant's actual name. To disambiguate, we use the
-    fact that the applicant's name and "Applicant ID:" are printed
-    together as part of the same repeated page header -- so among all
-    comma-pattern candidates, we pick whichever sits closest (vertically)
-    to the "Applicant ID:" line, rather than just the first match found.
+    lines somewhere on page 1, but NOT necessarily as the first line.
     """
     if len(doc) == 0:
         return None, None
@@ -321,13 +311,11 @@ def _extract_applicant_identity(doc) -> tuple[str | None, str | None]:
             id_bbox = bbox
             break
     if applicant_id is None:
-        # Fallback in case the ID line's spans didn't come through cleanly
-        # in _page_lines_with_boxes for some reason.
         full_text = doc[0].get_text()
         m = id_pattern.search(full_text)
         applicant_id = m.group(1) if m else None
 
-    name_pattern = re.compile(r"^[A-Za-z'\-]+,\s*[A-Za-z'\- ]+$")
+    name_pattern = re.compile(r"^[A-Za-z'\- ]+,\s*[A-Za-z'\- ]+$")
     candidates = [
         (text.strip(), bbox) for text, bbox in lines if name_pattern.match(text.strip())
     ]
@@ -339,6 +327,216 @@ def _extract_applicant_identity(doc) -> tuple[str | None, str | None]:
         name = candidates[0][0]
 
     return name, applicant_id
+
+
+def _extract_ece_gpa(doc) -> str | None:
+    """
+    Extract the Comprehensive GPA from the OFFICIAL ECE GPA section.
+
+    The section renders as a table with columns:
+        Institution | Credential | Best GPA | Comprehensive GPA
+
+    After whitespace normalization the relevant row looks like:
+        "Baba Farid University of Health Sciences Five years of study in a dentistry program 0.00 3.92"
+
+    The Comprehensive GPA is always the LAST numeric value in a table row
+    that also contains a Best GPA (often 0.00). We specifically look for
+    "Comprehensive GPA" as a column header to anchor our search, then take
+    the value that follows it in the data rows.
+
+    Strategy:
+    1. Find "Comprehensive GPA" header text -- this anchors us to the right
+       column. The value we want appears after this header in the normalized
+       text (one per dentistry-credential row).
+    2. Among all decimal numbers after "Comprehensive GPA", pick the last
+       non-zero one (the one associated with the dentistry row). If all are
+       zero, return "0.00" so the UI can display it accurately rather than
+       showing nothing.
+    3. Fallback: if "Comprehensive GPA" header isn't found but the section
+       exists, take the last decimal number on the page after the section
+       header (avoids grabbing Best GPA which is always listed first).
+    """
+    gpa_section_pattern = re.compile(r"OFFICIAL ECE GPA", re.IGNORECASE)
+    comprehensive_header = re.compile(r"Comprehensive\s+GPA", re.IGNORECASE)
+    decimal_pattern = re.compile(r"\b(\d+\.\d{1,2})\b")
+
+    for page_idx in range(len(doc)):
+        text = doc[page_idx].get_text()
+        normalized = re.sub(r"\s+", " ", text)
+
+        if not gpa_section_pattern.search(normalized):
+            continue
+
+        # Strategy 1: anchor on "Comprehensive GPA" column header text,
+        # then collect all decimal values that follow it. The comprehensive
+        # GPA is after this header; Best GPA appears before it.
+        comp_match = comprehensive_header.search(normalized)
+        if comp_match:
+            after_comp = normalized[comp_match.end():]
+            # Collect all decimal numbers after the Comprehensive GPA header
+            values = []
+            for m in decimal_pattern.finditer(after_comp):
+                val = float(m.group(1))
+                if 0.0 <= val <= 5.0:  # ECES scale goes to ~4.3
+                    values.append(m.group(1))
+            if values:
+                # Prefer the last non-zero value (the dentistry row's GPA).
+                # If there are multiple rows (e.g. high school + dentistry),
+                # the dentistry row is typically last.
+                non_zero = [v for v in values if float(v) > 0]
+                return non_zero[-1] if non_zero else values[-1]
+
+        # Strategy 2: fallback -- take the last decimal number in the section.
+        # In the table layout, columns are: Institution, Credential, Best GPA,
+        # Comprehensive GPA -- so the last number is Comprehensive GPA.
+        section_start = gpa_section_pattern.search(normalized)
+        if section_start:
+            after_header = normalized[section_start.end():]
+            all_vals = [
+                m.group(1)
+                for m in decimal_pattern.finditer(after_header)
+                if 0.0 <= float(m.group(1)) <= 5.0
+            ]
+            if all_vals:
+                non_zero = [v for v in all_vals if float(v) > 0]
+                return non_zero[-1] if non_zero else all_vals[-1]
+
+    return None
+
+
+def _extract_toefl_score(doc) -> tuple[float | None, bool]:
+    """
+    Extract TOEFL total score and whether it's the post-2026 scale (max 6).
+
+    Pre-2026 format (Internet-based, max 120):
+        Date    Type    Listening  Reading  Speaking  Writing  Essay  Total
+        04-26-2025  Internet-based  29  27  28  22       106
+
+    Post-2026 format (max 6):
+        The TOEFL iBT was redesigned; the new score scale tops out at 6.
+        We detect this by checking if the total is ≤ 6 and there are no
+        triple-digit subscores.
+
+    Returns (total_score, is_new_scale).
+    """
+    toefl_section_pattern = re.compile(r"OFFICIAL TOEFL\b", re.IGNORECASE)
+    # Match rows like: date  type  29  27  28  22  [essay]  106
+    # The "total" is the last number in the row; it may be preceded by
+    # subscores for Listening/Reading/Speaking/Writing and optionally Essay.
+    score_row_pattern = re.compile(
+        r"\b(?:Internet[\-\s]based|Paper[\-\s]based|Computer[\-\s]based)\b"
+        r".*?(\d+(?:\.\d+)?)\s*$",
+        re.IGNORECASE,
+    )
+    # Also handles space-separated inline format after normalization
+    inline_total_pattern = re.compile(
+        r"(?:Internet[\-\s]based|Paper[\-\s]based)\s+"
+        r"(?:\d+\s+){2,5}"          # 2-5 subscores
+        r"(\d+(?:\.\d+)?)",         # total
+        re.IGNORECASE,
+    )
+
+    for page_idx in range(len(doc)):
+        text = doc[page_idx].get_text()
+        normalized = re.sub(r"\s+", " ", text)
+        if not toefl_section_pattern.search(normalized):
+            continue
+
+        # Try the inline normalized format first (most reliable)
+        m = inline_total_pattern.search(normalized)
+        if m:
+            total = float(m.group(1))
+            is_new = total <= 6
+            return total, is_new
+
+        # Try line-by-line for the multi-column table layout
+        for line in text.splitlines():
+            line = line.strip()
+            m = score_row_pattern.match(line)
+            if m:
+                total = float(m.group(1))
+                is_new = total <= 6
+                return total, is_new
+
+    return None, False
+
+
+def _extract_dental_experience_hours(doc) -> int | None:
+    """
+    Extract the aggregate dental related experience total hours.
+
+    The section header reads:
+        DENTAL RELATED EXPERIENCE    TOTAL HOURS: 11551
+
+    or sometimes across two lines:
+        DENTAL RELATED EXPERIENCE
+        TOTAL HOURS: 11551
+
+    We look for "TOTAL HOURS" near the dental experience section and
+    parse the integer value that follows the colon.
+    """
+    dental_pattern = re.compile(r"DENTAL RELATED EXPERIENCE", re.IGNORECASE)
+    hours_pattern = re.compile(r"TOTAL HOURS\s*[:\s]+(\d[\d,]*)", re.IGNORECASE)
+
+    for page_idx in range(len(doc)):
+        text = doc[page_idx].get_text()
+        normalized = re.sub(r"\s+", " ", text)
+        if not dental_pattern.search(normalized):
+            continue
+
+        m = hours_pattern.search(normalized)
+        if m:
+            # Remove commas from numbers like "11,551"
+            return int(m.group(1).replace(",", ""))
+
+    return None
+
+
+def _extract_applicant_country(doc) -> str | None:
+    """
+    Extract the applicant's country from the CITIZENSHIP STATUS AND RESIDENCY
+    INFORMATION section. The field label is "Country of Citizenship:" and the
+    value is the country name immediately following it, e.g.:
+
+        Country of Citizenship:    India
+        Country of Citizenship:    New Zealand
+        Country of Citizenship:    Korea, Republic of
+
+    After whitespace normalization this looks like:
+        "Country of Citizenship: New Zealand State of Residence: Indiana ..."
+
+    We stop at the next known field label in this section (all of which are
+    fixed CAAPID field names) rather than using a generic capitalized-word
+    heuristic, which was incorrectly treating "Zealand" in "New Zealand" as
+    the start of a new field.
+    """
+    country_pattern = re.compile(
+        r"Country of Citizenship\s*:\s*(.+?)"
+        r"(?=\s+(?:State of Residence|County of Residence|Length of Residence"
+        r"|Other Citizenship|Citizenship Status|Length of stay)\s*:)",
+        re.IGNORECASE,
+    )
+    skip_values = {"—", "-", "n/a", "na", "not applicable", ""}
+
+    for page_idx in range(len(doc)):
+        text = doc[page_idx].get_text()
+        normalized = re.sub(r"\s+", " ", text)
+
+        if "Country of Citizenship" not in normalized:
+            continue
+
+        m = country_pattern.search(normalized)
+        if m:
+            val = m.group(1).strip().rstrip(",").strip()
+            if val in ("—", "-") or val.lower() in skip_values:
+                return None
+            if len(val) < 2 or len(val) > 60:
+                continue
+            if re.search(r"\d", val):
+                continue
+            return val
+
+    return None
 
 
 def parse_caapid_pdf(path: str, filename: str | None = None) -> ApplicantReport:
@@ -360,6 +558,12 @@ def parse_caapid_pdf(path: str, filename: str | None = None) -> ApplicantReport:
         dean_principal_found = any(e.is_dean_or_principal for e in report.evaluators)
 
         report.employment_found, report.employment_page = _find_employment(doc)
+
+        # Extract additional parsed data fields
+        report.ece_gpa = _extract_ece_gpa(doc)
+        report.toefl_total, report.toefl_is_new_scale = _extract_toefl_score(doc)
+        report.dental_experience_hours = _extract_dental_experience_hours(doc)
+        report.applicant_country = _extract_applicant_country(doc)
 
         missing = [s.label for s in report.sections if not s.found]
         if not dean_principal_found:
@@ -395,3 +599,7 @@ if __name__ == "__main__":
     print(f"COMPLETE: {report.is_complete}")
     if not report.is_complete:
         print(f"MISSING: {report.missing_items}")
+    print(f"ECE GPA: {report.ece_gpa}")
+    print(f"TOEFL Total: {report.toefl_total} ({'new scale' if report.toefl_is_new_scale else 'pre-2026'})")
+    print(f"Dental Hours: {report.dental_experience_hours}")
+    print(f"Country: {report.applicant_country}")

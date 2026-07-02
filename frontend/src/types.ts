@@ -45,6 +45,13 @@ export interface ApplicantReport {
   // waitlisted/not_reviewed.
   review_comment?: string | null;
   cycle_id?: string;
+
+  // Parsed data fields
+  ece_gpa?: string | null;           // e.g. "3.75"
+  toefl_total?: number | null;       // e.g. 106 (pre-2026 scale) or e.g. 5.5 (2026+)
+  toefl_is_new_scale?: boolean;      // true if 2026+ 6-point scale
+  dental_experience_hours?: number | null;  // total aggregated hours
+  applicant_country?: string | null; // country of origin from biographic info
 }
 
 export interface Cycle {
@@ -74,24 +81,50 @@ export interface ChecklistItem {
 }
 
 export function toChecklistItems(report: ApplicantReport): ChecklistItem[] {
-  const items: ChecklistItem[] = report.sections.map((s) => ({
-    label: s.label,
-    found: s.found,
-    page: s.page,
-  }));
+  const items: ChecklistItem[] = report.sections.map((s) => {
+    let detail: string | undefined;
+
+    if (s.key === 'official_ece_gpa' && report.ece_gpa) {
+      detail = `GPA: ${report.ece_gpa}`;
+    } else if (s.key === 'official_toefl' && report.toefl_total != null) {
+      if (report.toefl_is_new_scale) {
+        detail = `Score: ${report.toefl_total} / 6`;
+      } else {
+        detail = `Score: ${report.toefl_total} / 120`;
+      }
+    } else if (s.key === 'dental_experience' && report.dental_experience_hours != null) {
+      detail = `${report.dental_experience_hours.toLocaleString()} total hours`;
+    }
+
+    return {
+      label: s.label,
+      found: s.found,
+      page: s.page,
+      detail,
+    };
+  });
 
   const deanPrincipal = report.evaluators.find((e) => e.is_dean_or_principal);
   const firstEvaluator = report.evaluators[0];
+
+  // If no dean/principal, show the applicant's country as a helpful fallback
+  // so reviewers can see where the applicant is from at a glance.
+  let deanDetail: string;
+  if (deanPrincipal) {
+    deanDetail = `${deanPrincipal.name} (${deanPrincipal.occupation || deanPrincipal.title})`;
+  } else if (report.evaluators.length > 0) {
+    const countryNote = report.applicant_country ? ` · From: ${report.applicant_country}` : '';
+    deanDetail = `No Dean/Principal among ${report.evaluators.length} evaluator(s) found — worth a manual look${countryNote}`;
+  } else {
+    const countryNote = report.applicant_country ? ` · From: ${report.applicant_country}` : '';
+    deanDetail = `No evaluators found in this application${countryNote}`;
+  }
 
   items.push({
     label: 'Dean/Principal evaluator letter',
     found: !!deanPrincipal,
     page: deanPrincipal?.letter_page ?? null,
-    detail: deanPrincipal
-      ? `${deanPrincipal.name} (${deanPrincipal.occupation || deanPrincipal.title})`
-      : report.evaluators.length > 0
-        ? `No Dean/Principal among ${report.evaluators.length} evaluator(s) found — worth a manual look`
-        : 'No evaluators found in this application',
+    detail: deanDetail,
     // Even when no Dean/Principal match exists, offer a jump to wherever
     // the evaluators section starts (if there are any evaluators at all)
     // so the reviewer can check for themselves rather than being stuck
@@ -104,7 +137,7 @@ export function toChecklistItems(report: ApplicantReport): ChecklistItem[] {
     label: 'Employment',
     found: report.employment_found,
     page: report.employment_page,
-    detail: 'default rule — confirm with stakeholder',
+    detail: 'Any compensated dental/healthcare experience',
   });
 
   return items;

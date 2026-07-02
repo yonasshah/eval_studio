@@ -10,7 +10,8 @@ export interface CommentModalRequest {
   existingComment?: string | null;
   // Called with the raw text the reviewer typed: for 'invited' this is
   // just their additional notes (the backend prepends "MIR; "); for
-  // 'not_invited' this is the full required justification.
+  // 'not_invited' this is the full required justification; for
+  // 'waitlisted' this is an optional note.
   apply: (comment: string) => void;
 }
 
@@ -35,6 +36,7 @@ export default function StatusCommentModal({ request, onClose }: Props) {
 
   const { status, applicantLabel, apply } = request;
   const isNotInvited = status === 'not_invited';
+  const isWaitlisted = status === 'waitlisted';
   const trimmed = text.trim();
   const canConfirm = !isNotInvited || trimmed.length > 0;
   const statusMeta = STATUS_META[status];
@@ -64,10 +66,20 @@ export default function StatusCommentModal({ request, onClose }: Props) {
             in the export.
           </Text>
         )}
+        {isWaitlisted && (
+          <Text size="sm">
+            Optionally add a note explaining why this applicant is being waitlisted. This will
+            be included in the export.
+          </Text>
+        )}
 
         <Textarea
           placeholder={
-            isNotInvited ? 'Reason applicant was not invited...' : 'Additional comments (optional)...'
+            isNotInvited
+              ? 'Reason applicant was not invited...'
+              : isWaitlisted
+              ? 'Reason for waitlisting (optional)...'
+              : 'Additional comments (optional)...'
           }
           value={text}
           onChange={(e) => setText(e.currentTarget.value)}

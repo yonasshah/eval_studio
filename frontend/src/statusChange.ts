@@ -6,8 +6,10 @@ import type { ReviewStatus } from './types';
 //   - not_invited: comment is REQUIRED (a justification for the decision).
 //   - invited: an "MIR" note is always recorded automatically, with any
 //     additional text the reviewer types appended after it.
+//   - waitlisted: comment is optional but prompted so reviewers can note
+//     the reason for waitlisting.
 export function statusRequiresCommentStep(status: ReviewStatus): boolean {
-  return status === 'not_invited' || status === 'invited';
+  return status === 'not_invited' || status === 'invited' || status === 'waitlisted';
 }
 
 export const INVITED_DEFAULT_NOTE = 'MIR';

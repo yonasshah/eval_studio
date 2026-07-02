@@ -634,7 +634,6 @@ export default function TriagePage() {
       'Comments',
       'Missing Items',
       'Total Pages',
-      'Filename',
     ];
     const rows = reports.map((r) => {
       const { last, first } = splitName(r.applicant_name);
@@ -647,7 +646,6 @@ export default function TriagePage() {
         r.review_comment ?? '',
         (r.missing_items ?? []).join('; '),
         String(r.total_pages ?? ''),
-        r.filename,
       ];
     });
 
@@ -1250,6 +1248,9 @@ function ApplicantRow({
             <Text fw={500}>{formatApplicantLabel(report)}</Text>
             <Text size="xs" c="dimmed">
               {report.total_pages} pages
+              {!report.evaluators?.some((e) => e.is_dean_or_principal) && report.applicant_country
+                ? ` · ${report.applicant_country}`
+                : ''}
             </Text>
           </Stack>
         </Group>
