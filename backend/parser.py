@@ -406,57 +406,79 @@ def _extract_ece_gpa(doc) -> str | None:
 
 def _extract_toefl_score(doc) -> tuple[float | None, bool]:
     """
-    Extract TOEFL total score and whether it's the post-2026 scale (max 6).
+    Extract TOEFL total score from the OFFICIAL TOEFL Score section only.
 
-    Pre-2026 format (Internet-based, max 120):
-        Date    Type    Listening  Reading  Speaking  Writing  Essay  Total
-        04-26-2025  Internet-based  29  27  28  22       106
+    The page may contain multiple TOEFL sections:
+      - OFFICIAL TOEFL Score       (pre-2026, scores out of 120 -- what we want)
+      - UNOFFICIAL TOEFL           (has a Test Reg ID column that confuses number parsing)
+      - OFFICIAL TOEFL IBT         (post-2026, scores out of 6)
+      - UNOFFICIAL TOEFL IBT       (post-2026 unofficial)
 
-    Post-2026 format (max 6):
-        The TOEFL iBT was redesigned; the new score scale tops out at 6.
-        We detect this by checking if the total is ≤ 6 and there are no
-        triple-digit subscores.
+    We scope extraction to the text between "OFFICIAL TOEFL Score" and the
+    next section header so we never accidentally grab a subscore from the iBT
+    section (where 6.0 is a Listening subscore, not the total) or a Test
+    Reg ID from the Unofficial section (a 16-digit number that breaks the
+    subscore-count heuristic).
+
+    For the pre-2026 table, subscores (L/R/S/W) are each 0-30 (1-2 digits)
+    and the total is 30-120 (2-3 digits). We require the captured total to
+    NOT be immediately followed by a hyphen, which rules out date parts like
+    "07" from "07-06-2024" that previously caused the wrong value to be
+    returned when two score rows appeared back-to-back.
+
+    For post-2026 (iBT section), the total is explicitly labeled and <= 6.
 
     Returns (total_score, is_new_scale).
     """
-    toefl_section_pattern = re.compile(r"OFFICIAL TOEFL\b", re.IGNORECASE)
-    # Match rows like: date  type  29  27  28  22  [essay]  106
-    # The "total" is the last number in the row; it may be preceded by
-    # subscores for Listening/Reading/Speaking/Writing and optionally Essay.
-    score_row_pattern = re.compile(
-        r"\b(?:Internet[\-\s]based|Paper[\-\s]based|Computer[\-\s]based)\b"
-        r".*?(\d+(?:\.\d+)?)\s*$",
+    official_score_section = re.compile(r"OFFICIAL TOEFL Score", re.IGNORECASE)
+    # Stop before Unofficial or the new iBT section
+    next_section = re.compile(r"UNOFFICIAL TOEFL|OFFICIAL TOEFL IBT", re.IGNORECASE)
+
+    # Pre-2026: Internet/Paper/Computer-based row with 2-5 single/double-digit
+    # subscores followed by a 2-3 digit total not immediately trailed by a hyphen
+    pre_scale_pattern = re.compile(
+        r"(?:Internet[\-\s]based|Paper[\-\s]based|Computer[\-\s]based)\s+"
+        r"(?:\d{1,2}\s+){2,5}"
+        r"(\d{2,3})(?!\s*-)",
         re.IGNORECASE,
     )
-    # Also handles space-separated inline format after normalization
-    inline_total_pattern = re.compile(
-        r"(?:Internet[\-\s]based|Paper[\-\s]based)\s+"
-        r"(?:\d+\s+){2,5}"          # 2-5 subscores
-        r"(\d+(?:\.\d+)?)",         # total
+
+    # Post-2026 iBT: look in the OFFICIAL TOEFL IBT section for a Total column value <= 6
+    ibt_section = re.compile(r"OFFICIAL TOEFL IBT", re.IGNORECASE)
+    ibt_total_pattern = re.compile(
+        r"(?:\d+\.\d+\s+){3,}"   # several x.x subscores
+        r"(\d+\.\d+)",             # final x.x = total
         re.IGNORECASE,
     )
 
     for page_idx in range(len(doc)):
         text = doc[page_idx].get_text()
         normalized = re.sub(r"\s+", " ", text)
-        if not toefl_section_pattern.search(normalized):
-            continue
 
-        # Try the inline normalized format first (most reliable)
-        m = inline_total_pattern.search(normalized)
-        if m:
-            total = float(m.group(1))
-            is_new = total <= 6
-            return total, is_new
+        # --- Pre-2026 Official TOEFL Score section ---
+        sec_m = official_score_section.search(normalized)
+        if sec_m:
+            after = normalized[sec_m.end():]
+            end_m = next_section.search(after)
+            window = after[:end_m.start()] if end_m else after
 
-        # Try line-by-line for the multi-column table layout
-        for line in text.splitlines():
-            line = line.strip()
-            m = score_row_pattern.match(line)
+            m = pre_scale_pattern.search(window)
+            if m:
+                return float(m.group(1)), False
+
+        # --- Post-2026 Official TOEFL IBT section ---
+        ibt_m = ibt_section.search(normalized)
+        if ibt_m:
+            after_ibt = normalized[ibt_m.end():]
+            # Stop before Unofficial IBT
+            unofficial_ibt = re.search(r"UNOFFICIAL TOEFL IBT", after_ibt, re.IGNORECASE)
+            ibt_window = after_ibt[:unofficial_ibt.start()] if unofficial_ibt else after_ibt
+
+            m = ibt_total_pattern.search(ibt_window)
             if m:
                 total = float(m.group(1))
-                is_new = total <= 6
-                return total, is_new
+                if total <= 6:
+                    return total, True
 
     return None, False
 
